@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld('studio', {
   cancelTask: () => ipcRenderer.invoke('agent:cancel'),
   checkCli: () => ipcRenderer.invoke('agent:check'),
   checkAuth: () => ipcRenderer.invoke('agent:auth'),
+  openUsage: () => ipcRenderer.invoke('sourcecraft:openUsage'),
   getSettings: () => ipcRenderer.invoke('settings:get'),
   chooseCli: () => ipcRenderer.invoke('settings:choose'),
   setCliPath: file => ipcRenderer.invoke('settings:setCliPath', file),

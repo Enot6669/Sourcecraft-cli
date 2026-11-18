@@ -12,7 +12,7 @@ if (typeof electron === 'string') {
   if (run.error) console.error(run.error);
   process.exitCode = run.status ?? 1;
 } else {
-  const {app, BrowserWindow, dialog} = electron;
+  const {app, BrowserWindow, dialog, shell} = electron;
   const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
   async function verify() {
@@ -37,6 +37,8 @@ if (typeof electron === 'string') {
       // Bypass just the native folder picker. The app still lists and opens the
       // selected folder and runs all renderer-to-main IPC handlers normally.
       dialog.showOpenDialog = async () => ({canceled: false, filePaths: [project]});
+      let openedUsage;
+      shell.openExternal = async url => { openedUsage = url; };
       require('../electron/main.cjs');
       await app.whenReady();
       async function waitFor(check, label) {
@@ -61,6 +63,8 @@ if (typeof electron === 'string') {
       const waitForText = (selector, value) => waitFor(() => has(selector, value), selector + ': ' + value);
 
       await waitForText('.status', 'CLI найден');
+      await click('.sidebar button', 'Квоты SourceCraft');
+      await waitFor(() => openedUsage === 'https://sourcecraft.dev/me/codeassistant/settings', 'SourceCraft usage link');
       await click('.sidebar button', 'Настройки CLI');
       await waitFor(() => js('!!document.querySelector(".settings-result")'), 'CLI settings');
       await waitFor(() => js('[...document.querySelectorAll(".settings-panel button")].some(b => b.textContent.includes("Проверить авторизацию") && !b.disabled)'), 'CLI settings ready');

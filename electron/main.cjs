@@ -4,7 +4,7 @@ const {randomUUID} = require('node:crypto');
 const {pathToFileURL} = require('node:url');
 const {runServerTurn} = require('./app-server.cjs');
 const {createChatHistory, validId} = require('./chat-history.cjs');
-const {app, BrowserWindow, ipcMain, dialog} = require('electron');
+const {app, BrowserWindow, ipcMain, dialog, shell} = require('electron');
 const {resolveWithin, within} = require('./paths.cjs');
 const {checkAuth, checkExecutable, findCli} = require('./cli.cjs');
 
@@ -179,6 +179,7 @@ handle('editor:close', async () => {
   win.close();
 });
 
+handle('sourcecraft:openUsage', () => shell.openExternal('https://sourcecraft.dev/me/codeassistant/settings'));
 handle('settings:get', () => ({cliPath}));
 handle('settings:choose', async () => {
   const result = await dialog.showOpenDialog(win, {

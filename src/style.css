@@ -43,3 +43,5 @@
 .approval-footer{border-top:1px solid #6b573c}
 .approval-review{min-height:0;overflow:auto;padding:4px 12px}
 .approval-details pre{max-height:none;margin:6px 0}
+
+.sourcecraft-usage{margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;text-align:left;color:#c1cdff}

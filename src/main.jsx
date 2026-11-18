@@ -451,6 +451,10 @@ function App() {
         <div className="files">{files.map(file =>
           <button key={file} disabled={editorBusy} className={active === file ? 'selected' : ''} onClick={() => openFile(file)}>▤ {file}</button>
         )}</div>
+        <button className="sourcecraft-usage" title="Просмотреть квоту и расход нейрокредитов в браузере"
+          onClick={() => api.openUsage().catch(error => alert(cleanError(error)))}>
+          Квоты SourceCraft <span aria-hidden="true">↗</span>
+        </button>
         <button onClick={() => setSettingsOpen(true)}>⚙ Настройки CLI</button>
         <div className="foot">Локальная работа с проектом</div>
       </aside>
