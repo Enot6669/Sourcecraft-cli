@@ -35,6 +35,55 @@ function outputText({text, truncated}) {
   return truncated ? '[Начало вывода скрыто из-за ограничения размера]\n' + text : text;
 }
 
+function groupChatMessages(messages) {
+  const rows = [];
+  let work;
+  messages.forEach((message, index) => {
+    if (message.role === 'user') work = undefined;
+    if (message.role !== 'activity') {
+      rows.push({...message, id: index});
+    } else {
+      if (!work) {
+        work = {role: 'work', id: index, events: []};
+        rows.push(work);
+      }
+      work.events.push(message);
+    }
+  });
+  return rows;
+}
+
+function ApprovalCard({request, remaining, busy, error, onDecision}) {
+  return <section className="approval-panel" aria-label="Подтверждение агента">
+    <div className="approval-request">
+      <div className="approval-heading">
+        <b>{request.title}</b>
+        {remaining > 0 && <small>В очереди ещё: {remaining}</small>}
+      </div>
+      <div className="approval-review">
+        <p>{request.summary}</p>
+        {request.operations.length > 0 && <ul className="approval-operations">
+          {request.operations.map((operation, index) => <li key={index}>{operation}</li>)}
+        </ul>}
+        {request.cwd && <p><strong>Рабочая папка</strong> {request.cwd}</p>}
+        {request.reason && <p><strong>Зачем агент просит</strong> {request.reason}</p>}
+        <details open={request.showDetails || undefined} className="approval-details">
+          <summary>{request.detailsLabel}</summary>
+          <pre tabIndex={0}>{request.details}</pre>
+        </details>
+      </div>
+      <div className="approval-footer">
+        <p>Решение действует только для этого запроса.</p>
+        <div className="approval-actions">
+          <button className="primary" disabled={busy} onClick={() => onDecision(request, true)}>Разрешить один раз</button>
+          <button disabled={busy} onClick={() => onDecision(request, false)}>Отклонить</button>
+        </div>
+        {error && <p role="alert">{error}</p>}
+      </div>
+    </div>
+  </section>;
+}
+
 function useFollowOutput(content, visible = true) {
   const ref = useRef(null);
   const follow = useRef(true);
@@ -185,7 +234,8 @@ function App() {
         currentThreadId.current = details.threadId;
         setThreadId(details.threadId);
       } else if (type === 'approval') {
-        setApprovals(previous => [...previous, {taskId, key, ...details}]);
+        setApprovals(previous => previous.some(item => item.key === key) ? previous :
+          [...previous, {taskId, key, ...details}]);
       } else if (type === 'approvalResolved') {
         setApprovals(previous => previous.filter(item => item.key !== key));
       } else if (type === 'activity' && text) {
@@ -255,7 +305,7 @@ function App() {
       const sent = await api.decide(approval.taskId, approval.key, accept);
       if (!sent) throw Error('Этот запрос уже закрыт.');
       setMessages(previous => [...previous, {
-        role: 'activity', text: accept ? 'Вы подтвердили действие.' : 'Вы отклонили действие.',
+        role: 'activity', text: (accept ? 'Разрешено: ' : 'Отклонено: ') + (approval.operations[0] || approval.title.replace(/\?$/, '')),
       }]);
       setApprovals(previous => previous.filter(item => item.key !== approval.key));
     } catch (error) {
@@ -447,26 +497,19 @@ function App() {
         {historyError && <p className="history-error" role="status">{historyError}</p>}
         <div className="chat" {...chatScroll} tabIndex={0} role="region" aria-label="Диалог с ассистентом">
           {messages.length === 0 ? <div className="welcome-chat"><b>SOURCECRAFT</b>
-            <p>Откройте проект, выберите агента и отправьте задачу.</p>
-          </div> : messages.map((message, index) =>
-            <div key={index} className={'message ' + message.role} hidden={message.role === 'agent' && !message.text}>
-              <b>{{user: 'Вы', agent: 'Агент', error: 'Ошибка', result: 'Статус', activity: 'Ход работы'}[message.role]}</b><pre>{outputText(message)}</pre>
+            <p>Откройте проект и отправьте задачу в чат SourceCraft.</p>
+          </div> : groupChatMessages(messages).map(message => message.role === 'work' ?
+            <details key={message.id} className="message activity work-log">
+              <summary>Ход работы <small>{message.events.length}</small></summary>
+              <ul>{message.events.map((event, index) => <li key={index}><pre>{outputText(event)}</pre></li>)}</ul>
+            </details> :
+            <div key={message.id} className={'message ' + message.role} hidden={message.role === 'agent' && !message.text}>
+              <b>{{user: 'Вы', agent: 'Агент', error: 'Ошибка', result: 'Статус'}[message.role]}</b><pre>{outputText(message)}</pre>
             </div>
           )}
         </div>
-        {running && approvals.length > 0 && <section className="approval-panel" aria-label="Подтверждения агента">
-          {approvals.map(item => <div key={item.key} className="approval-request">
-            <b>{item.title}</b>
-            {item.reason && <p>{item.reason}</p>}
-            <pre tabIndex={0}>{item.details}</pre>
-            <div className="approval-actions">
-              <button className="primary" disabled={Boolean(decisionBusy)}
-                onClick={() => decide(item, true)}>Разрешить один раз</button>
-              <button disabled={Boolean(decisionBusy)} onClick={() => decide(item, false)}>Отклонить</button>
-            </div>
-          </div>)}
-          {decisionError && <p role="alert">{decisionError}</p>}
-        </section>}
+        {running && approvals.length > 0 && <ApprovalCard key={approvals[0].key} request={approvals[0]}
+          remaining={approvals.length - 1} busy={Boolean(decisionBusy)} error={decisionError} onDecision={decide} />}
         <div className="composer">
           <textarea maxLength={12000} value={prompt} onChange={event => setPrompt(event.target.value)}
             onKeyDown={event => {

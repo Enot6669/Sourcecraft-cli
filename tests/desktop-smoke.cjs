@@ -79,20 +79,36 @@ if (typeof electron === 'string') {
 
       await input('.composer textarea', 'Подтверждение в Studio');
       await click('.composer button', 'Запустить');
+      await waitForText('.approval-panel', 'Прочитать файл: notes.txt');
+      await waitForText('.approval-panel', 'В очереди ещё: 1');
+      await waitForText('.approval-panel', 'Проверить содержимое перед правкой');
+      assert.equal(await js('document.querySelectorAll(".approval-request").length'), 1);
+      assert.equal(await has('.approval-panel', 'summary.txt'), false);
+      assert.equal(await js('document.querySelector(".approval-details").open'), false);
+      await click('.approval-details summary', 'Точная команда');
+      assert.equal(await js('document.querySelector(".approval-details").open'), true);
       await waitForText('.approval-panel', 'Get-Content notes.txt');
-      await waitForText('.chat', 'Чтение файла notes.txt');
+      await waitForText('.work-log', 'Чтение файла notes.txt');
+      assert.equal(await js('document.querySelector(".work-log").open'), false);
+      await click('.work-log summary', 'Ход работы');
+      assert.equal(await js('document.querySelector(".work-log").open'), true);
       await waitForText('.chat', 'Сначала проверю notes.txt.');
       assert.equal(await has('.chat', 'PRIVATE_NOT_SHOWN'), false);
       assert.equal(await has('.chat', 'Подтверждение получено.'), false);
       await click('.approval-panel button', 'Разрешить один раз');
       await waitForText('.chat', 'Подтверждение получено.');
+      await waitForText('.approval-panel', 'Создать: summary.txt');
+      assert.equal(await has('.approval-panel', 'Get-Content notes.txt'), false);
+      assert.equal(await has('.approval-panel', 'В очереди'), false);
+      assert.equal(await js('document.querySelector(".approval-details").open'), false);
+      await click('.approval-panel button', 'Отклонить');
       await waitForText('.chat', 'Задача завершена');
       await waitFor(() => js('[...document.querySelectorAll(".composer button")].some(b => b.textContent === "Запустить")'), 'ready for next turn');
       await input('.composer textarea', 'Продолжить чат');
       await click('.composer button', 'Запустить');
       await waitForText('.approval-panel', 'Get-Content notes.txt');
       await click('.approval-panel button', 'Отклонить');
-      await waitForText('.chat', 'Отказ получен.');
+      await waitFor(() => js('[...document.querySelectorAll(".message.agent")].filter(el => el.textContent.includes("Отказ получен.")).length === 2'), 'next approval declined');
       await waitFor(() => js('[...document.querySelectorAll(".composer button")].some(b => b.textContent === "Запустить")'), 'ready to cancel');
       await input('.composer textarea', 'Остановить текущую задачу');
       await click('.composer button', 'Запустить');
@@ -105,6 +121,7 @@ if (typeof electron === 'string') {
       await js('(() => { const select = document.querySelector(".chat-toolbar select"); select.selectedIndex = 1; select.dispatchEvent(new Event("change", {bubbles: true})); })()');
       await waitForText('.chat', 'Подтверждение получено.');
       await waitForText('.chat', 'Отказ получен.');
+      assert.equal(await js('document.querySelector(".work-log").open'), false);
       console.log('Desktop smoke passed: CLI detection, authentication UI, editor save, approvals, action feed, chat history');
     } finally {
       process.chdir(os.tmpdir());

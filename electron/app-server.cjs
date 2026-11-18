@@ -16,6 +16,22 @@ function localPort() {
   });
 }
 
+function explainCommand(action) {
+  if (action?.type === 'read') return action.path || action.name ? 'Прочитать файл: ' + (action.path || action.name) : 'Прочитать файл';
+  if (action?.type === 'listFiles') return action.path ? 'Показать список файлов в папке: ' + action.path : 'Показать список файлов';
+  if (action?.type === 'search') return action.query ? 'Поиск по запросу: ' + action.query : 'Выполнить поиск';
+  return null;
+}
+
+function explainChange(change) {
+  const kind = change.kind?.type;
+  const verbs = {add: 'Создать', update: 'Изменить', delete: 'Удалить'};
+  const verb = Object.hasOwn(verbs, kind) ? verbs[kind] : 'Изменение файла';
+  const destination = typeof change.kind?.movePath === 'string' && change.kind.movePath;
+  if (kind === 'update' && destination) return 'Переместить файл: ' + change.path + ' → ' + destination;
+  return verb + ': ' + change.path;
+}
+
 function describeApproval(message, item) {
   const {params, method} = message;
   if (!params || !approvalMethods.has(method) || params.networkApprovalContext || params.additionalPermissions) return null;
@@ -24,19 +40,38 @@ function describeApproval(message, item) {
     const command = params.command || item?.command;
     const cwd = params.cwd || item?.cwd;
     if (typeof command !== 'string' || !command || typeof cwd !== 'string' || !cwd) return null;
-    return {title: 'Разрешить выполнение команды?', details: cwd + '\n\n' + command};
+    const sameCommand = !params.command || !item?.command || params.command === item.command;
+    const actions = Array.isArray(params.commandActions) && params.commandActions.length
+      ? params.commandActions : sameCommand ? item?.commandActions : undefined;
+    const explanations = Array.isArray(actions) ? actions.map(explainCommand) : [];
+    const complete = explanations.length > 0 && explanations.every(Boolean);
+    return {
+      title: 'Разрешить запуск команды?',
+      detailsLabel: 'Точная команда',
+      operations: explanations.filter(Boolean),
+      summary: complete ? 'SourceCraft определил назначение команды. Сверьте его с точной командой ниже.'
+        : 'SourceCraft не описал все действия этой команды. Проверьте, что она сделает, по её тексту.',
+      showDetails: !complete,
+      cwd,
+      details: command,
+    };
   }
   if (!Array.isArray(item?.changes) || !item.changes.length ||
       item.changes.some(change => typeof change.path !== 'string' || typeof change.diff !== 'string' ||
         !change.diff || (typeof params.grantRoot === 'string' && params.grantRoot))) return null;
-  return {title: 'Разрешить изменение файлов?',
-    details: item.changes.map(change => change.path + '\n' + change.diff).join('\n\n')};
+  return {
+    title: 'Разрешить изменение файлов?',
+    detailsLabel: 'Точные изменения',
+    summary: 'Агент применит предложенные изменения к перечисленным файлам.',
+    operations: item.changes.map(explainChange),
+    details: item.changes.map(change => change.path + '\n' + change.diff).join('\n\n'),
+  };
 }
 
 function describeActivity(item) {
   switch (item.type) {
     case 'commandExecution':
-      if (item.commandActions?.length) {
+      if (Array.isArray(item.commandActions) && item.commandActions.length) {
         return item.commandActions.map(action => {
           if (action.type === 'read') return 'Чтение файла ' + (action.path || action.name);
           if (action.type === 'listFiles') return 'Просмотр файлов ' + (action.path || '');
@@ -72,6 +107,7 @@ async function runServerTurn(file, {cwd, prompt, threadId, signal, onEvent, regi
   let interruptTimer;
   const pending = new Map();
   const approvals = new Map();
+  const seenApprovals = new Set();
   const items = new Map();
   const streamed = new Map();
 
@@ -128,6 +164,9 @@ async function runServerTurn(file, {cwd, prompt, threadId, signal, onEvent, regi
       else send({id, error: {code: -32601, message: 'Request type not supported by Studio'}});
       return;
     }
+    const key = String(id);
+    if (seenApprovals.has(key)) return;
+    seenApprovals.add(key);
     const review = params?.threadId === currentThread && (!turnId || params.turnId === turnId)
       ? describeApproval(message, items.get(params.itemId)) : null;
     const allowed = !Array.isArray(params?.availableDecisions) || params.availableDecisions.includes('accept');
@@ -136,7 +175,6 @@ async function runServerTurn(file, {cwd, prompt, threadId, signal, onEvent, regi
       onEvent({type: 'activity', text: 'Запрос отклонён: Studio не может показать или подтвердить это действие.'});
       return;
     }
-    const key = String(id);
     approvals.set(key, {id, canAccept: true});
     onEvent({type: 'approval', key, ...review, reason: String(params.reason || '').slice(0, 4000)});
   }
@@ -219,7 +257,7 @@ async function runServerTurn(file, {cwd, prompt, threadId, signal, onEvent, regi
 
   try {
     if (!await ready) return await done;
-    await call('initialize', {clientInfo: {name: 'sourcecraft_studio', version: '0.1.2'}});
+    await call('initialize', {clientInfo: {name: 'sourcecraft_studio', version: require('../package.json').version}});
     send({method: 'initialized'});
     const config = {cwd, approvalPolicy: 'on-request', sandbox: 'workspace-write'};
     const {thread} = threadId ? await call('thread/resume', {...config, threadId})

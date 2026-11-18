@@ -27,11 +27,18 @@ test('stores each project separately and restores its conversation id and messag
 test('approval previews require a concrete command or file diff and reject broader access', () => {
   const command = {method: 'item/commandExecution/requestApproval', params: {cwd: '/project', command: 'git status'}};
   assert.match(describeApproval(command).details, /git status/);
+  assert.equal(describeApproval(command).showDetails, true);
+  const read = describeApproval(command, {commandActions: [{type: 'read', path: 'notes.txt'}]});
+  assert.equal(read.showDetails, false);
+  assert.deepEqual(read.operations, ['Прочитать файл: notes.txt']);
+  const mixed = describeApproval(command, {commandActions: [{type: 'read', path: 'notes.txt'}, {type: 'unknown'}]});
+  assert.equal(mixed.showDetails, true);
   assert.equal(describeApproval({...command, params: {command: 'git status'}}), null);
   assert.equal(describeApproval({...command, params: {...command.params, networkApprovalContext: {host: 'example.org'}}}), null);
   assert.equal(describeApproval({...command, params: {...command.params, additionalPermissions: {}}}), null);
   const patch = {method: 'item/fileChange/requestApproval', params: {}};
-  const item = {changes: [{path: 'index.js', diff: '+const n = 1;'}]};
+  const item = {changes: [{path: 'index.js', kind: {type: 'add'}, diff: '+const n = 1;'}]};
+  assert.deepEqual(describeApproval(patch, item).operations, ['Создать: index.js']);
   assert.match(describeApproval(patch, item).details, /index\.js\n\+const n/);
   assert.equal(describeApproval({...patch, params: {grantRoot: '/outside'}}, item), null);
   assert.match(describeActivity({type: 'commandExecution', commandActions: [{type: 'read', path: 'README.md'}]}), /README.md/);

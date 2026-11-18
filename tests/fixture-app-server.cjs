@@ -21,6 +21,7 @@ server.on('upgrade', (request, socket, head) => {
     socket.write(Buffer.concat([header, data]));
   }
   const context = {threadId: fixedThread, turnId: 'turn-1'};
+  const pendingReviews = new Set();
   function handle(message) {
     const {id, method, params, result} = message;
     if (method === 'initialize') send({id, result: {userAgent: 'fixture app-server'}});
@@ -37,14 +38,25 @@ server.on('upgrade', (request, socket, head) => {
       send({method: 'item/reasoning/summaryTextDelta', params: {...context, itemId: 'reasoning-1', delta: 'Сначала проверю notes.txt.'}});
       send({method: 'item/reasoning/textDelta', params: {...context, itemId: 'reasoning-1', delta: 'PRIVATE_NOT_SHOWN'}});
       send({method: 'item/started', params: {...context, item}});
-      send({id: 'review-1', method: 'item/commandExecution/requestApproval',
-        params: {...context, itemId: item.id, command: item.command, cwd: item.cwd, reason: 'Тест подтверждения'}});
+      const first = {id: 'review-1', method: 'item/commandExecution/requestApproval',
+        params: {...context, itemId: item.id, command: item.command, cwd: item.cwd, reason: 'Проверить содержимое перед правкой'}};
+      pendingReviews.add(first.id);
+      send(first);
+      if (params.input[0].text === 'Подтверждение в Studio') {
+        send(first); // A repeated notification must not create a second card.
+        const change = {id: 'file-1', type: 'fileChange',
+          changes: [{path: 'summary.txt', kind: {type: 'add'}, diff: '+Summary'}]};
+        send({method: 'item/started', params: {...context, item: change}});
+        pendingReviews.add('review-2');
+        send({id: 'review-2', method: 'item/fileChange/requestApproval',
+          params: {...context, itemId: change.id, reason: 'Сохранить итог в отдельный файл'}});
+      }
     }
-    if (id === 'review-1' && result) {
+    if (result && pendingReviews.delete(id)) {
       send({method: 'serverRequest/resolved', params: {threadId: fixedThread, requestId: id}});
       send({method: 'item/completed', params: {...context,
-        item: {type: 'agentMessage', id: 'answer-1', text: result.decision === 'accept' ? 'Подтверждение получено.' : 'Отказ получен.'}}});
-      send({method: 'turn/completed', params: {threadId: fixedThread, turn: {id: context.turnId, status: 'completed'}}});
+        item: {type: 'agentMessage', id: 'answer-' + id, text: result.decision === 'accept' ? 'Подтверждение получено.' : 'Отказ получен.'}}});
+      if (!pendingReviews.size) send({method: 'turn/completed', params: {threadId: fixedThread, turn: {id: context.turnId, status: 'completed'}}});
     }
   }
   function read(chunk) {
