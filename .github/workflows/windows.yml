@@ -24,7 +24,9 @@ jobs:
       - name: Install and open SourceCraft Studio
         shell: pwsh
         run: |
-          $installer = (Get-ChildItem 'release/*.exe' | Select-Object -First 1).FullName
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $windowTitle = "SourceCraft Studio v.$version"
+          $installer = (Resolve-Path "release/SourceCraft-Studio-Setup-v.$version.exe").Path
           $destination = Join-Path $env:RUNNER_TEMP 'sourcecraft-studio-installed'
           $install = Start-Process -FilePath $installer -ArgumentList "/S /D=$destination" -PassThru -Wait -WindowStyle Hidden
           if ($install.ExitCode -ne 0) { throw "Installer failed (code $($install.ExitCode))." }
@@ -36,9 +38,9 @@ jobs:
               Start-Sleep -Milliseconds 500
               $process.Refresh()
               if ($process.HasExited) { throw "Studio exited before opening a window (code $($process.ExitCode))." }
-              if ($process.MainWindowTitle -eq 'SourceCraft Studio') { break }
+              if ($process.MainWindowTitle -eq $windowTitle) { break }
             } while ((Get-Date) -lt $deadline)
-            if ($process.MainWindowTitle -ne 'SourceCraft Studio') { throw 'The installed Studio did not open.' }
+            if ($process.MainWindowTitle -ne $windowTitle) { throw 'The installed Studio did not open.' }
           } finally {
             if (!$process.HasExited) { Stop-Process -Id $process.Id -Force }
           }

@@ -4,6 +4,8 @@ const {randomUUID} = require('node:crypto');
 const {pathToFileURL} = require('node:url');
 const {runCli} = require('./run-cli.cjs');
 const {interactiveCommand} = require('./interactive.cjs');
+const {runServerTurn} = require('./app-server.cjs');
+const {createChatHistory, validId} = require('./chat-history.cjs');
 const {app, BrowserWindow, ipcMain, dialog, clipboard} = require('electron');
 const {resolveWithin, within} = require('./paths.cjs');
 const {checkAuth, checkExecutable, findCli} = require('./cli.cjs');
@@ -21,6 +23,7 @@ let cliPath = '';
 let savingSettings = false;
 let allowClose = false;
 let rendererReady = false;
+let chatHistory;
 
 const settingsFile = () => path.join(app.getPath('userData'), 'settings.json');
 
@@ -86,6 +89,7 @@ function createWindow() {
 
 app.whenReady().then(async () => {
   await loadSettings();
+  chatHistory = createChatHistory(path.join(app.getPath('userData'), 'chats'));
   createWindow();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -116,6 +120,8 @@ async function listFiles(directory) {
   await walk(directory, 0);
   return output;
 }
+
+handle('project:refresh', () => root ? listFiles(root) : []);
 
 handle('project:choose', async () => {
   if (activeTask) throw Error('Дождитесь завершения задачи');
@@ -222,16 +228,25 @@ handle('clipboard:copy', text => {
   return clipboard.writeText(text);
 });
 
-handle('agent:run', async (prompt, agent, taskId) => {
+handle('chat:list', () => root ? chatHistory.list(root) : []);
+handle('chat:save', (directory, chat) => {
+  if (!root || root !== directory) throw Error('Проект был изменён.');
+  return chatHistory.save(directory, chat);
+});
+handle('agent:decision', (taskId, key, accept) =>
+  activeTask?.id === taskId && (activeTask.decide?.(key, accept) ?? false));
+
+handle('agent:run', async (prompt, agent, taskId, threadId) => {
   if (!Number.isSafeInteger(taskId) || taskId < 1) throw Error('Некорректный номер задачи');
   const directory = root;
   if (!directory) throw Error('Сначала откройте проект');
   if (activeTask || savingSettings) throw Error('Дождитесь завершения текущей операции');
   if (typeof prompt !== 'string' || !prompt.trim() || prompt.length > 12000) throw Error('Введите задачу длиной до 12 000 символов');
+  if (threadId && !validId(threadId)) throw Error('Некорректный идентификатор чата');
   const flags = {ycodex: '--ycodex', codex: '--codex'};
-  if (!Object.hasOwn(flags, agent)) throw Error('Этот агент не поддерживается');
+  if (agent !== 'chat' && !Object.hasOwn(flags, agent)) throw Error('Этот агент не поддерживается');
 
-  const task = {controller: new AbortController(), finished: null};
+  const task = {id: taskId, decide: null, controller: new AbortController(), finished: null};
   activeTask = task;
   task.finished = (async () => {
     const {signal} = task.controller;
@@ -242,6 +257,15 @@ handle('agent:run', async (prompt, agent, taskId) => {
       return result;
     }
     if (!cli.ok) throw Error(cli.message);
+    if (agent === 'chat') {
+      const result = await runServerTurn(cli.path, {
+        cwd: directory, prompt, threadId, signal,
+        onEvent: event => send('agent:event', {taskId, ...event}),
+        registerDecision: decide => { task.decide = decide; },
+      });
+      send('agent:output', {taskId, result});
+      return result;
+    }
     const result = await runCli(cli.path, ['do', flags[agent], '--', prompt], {
       cwd: directory,
       signal,

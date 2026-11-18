@@ -1,6 +1,7 @@
 import React, {useEffect, useLayoutEffect, useRef, useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import './style.css';
+import {version} from '../package.json';
 
 const api = window.studio;
 const terminalLimit = 200000;
@@ -14,7 +15,7 @@ const taskResults = {
   timeout: 'Задача остановлена по истечении времени ожидания.',
   'stop-failed': 'Не удалось завершить процесс CLI.',
 };
-const resultText = result => taskResults[result.status] || 'Ошибка выполнения, код ' + result.code;
+const resultText = result => taskResults[result.status] || result.message || 'Ошибка выполнения, код ' + result.code;
 const authLabels = {
   'signed-in': 'Вход выполнен',
   'signed-out': 'Требуется вход',
@@ -147,7 +148,14 @@ function App() {
   const [drafts, setDrafts] = useState({});
   const [saved, setSaved] = useState({});
   const [prompt, setPrompt] = useState('');
-  const [agent, setAgent] = useState('ycodex');
+  const [agent, setAgent] = useState('chat');
+  const [chatId, setChatId] = useState('');
+  const [threadId, setThreadId] = useState('');
+  const [chatList, setChatList] = useState([]);
+  const [historyError, setHistoryError] = useState('');
+  const [approvals, setApprovals] = useState([]);
+  const [decisionBusy, setDecisionBusy] = useState('');
+  const [decisionError, setDecisionError] = useState('');
   const [messages, setMessages] = useState([]);
   const [running, setRunning] = useState(false);
   const [cancelling, setCancelling] = useState(false);
@@ -157,6 +165,8 @@ function App() {
   const editorLock = useRef(false);
   const taskLock = useRef(false);
   const nextTaskId = useRef(0);
+  const currentTaskId = useRef(null);
+  const currentThreadId = useRef('');
   const [copyNotice, setCopyNotice] = useState(null);
   const checkInitial = useRef(true);
   const chatScroll = useFollowOutput(messages);
@@ -164,12 +174,12 @@ function App() {
 
   useEffect(() => {
     api.checkCli().then(result => {
-      document.title = 'SourceCraft Studio';
+      document.title = 'SourceCraft Studio v.' + version;
       if (checkInitial.current) setDiagnostic(result);
     }).catch(error => {
       if (checkInitial.current) setDiagnostic({ok: false, message: cleanError(error)});
     });
-    return api.onOutput(({taskId, text, result}) => {
+    const stopOutput = api.onOutput(({taskId, text, result}) => {
       if (result) {
         setTerminal(previous => appendOutput(previous, '\n[' + resultText(result) + ']\n'));
         return;
@@ -178,7 +188,91 @@ function App() {
       setMessages(items => items.map(item =>
         item.role === 'agent' && item.taskId === taskId ? appendOutput(item, text) : item));
     });
+    const stopEvents = api.onAgentEvent(({taskId, type, key, text, role, ...details}) => {
+      if (taskId !== currentTaskId.current) return;
+      if (type === 'thread') {
+        currentThreadId.current = details.threadId;
+        setThreadId(details.threadId);
+      } else if (type === 'approval') {
+        setApprovals(previous => [...previous, {taskId, key, ...details}]);
+      } else if (type === 'approvalResolved') {
+        setApprovals(previous => previous.filter(item => item.key !== key));
+      } else if (type === 'activity' && text) {
+        setMessages(previous => [...previous, {role: 'activity', text}]);
+      } else if (type === 'delta' || type === 'answer') {
+        const itemRole = type === 'answer' || role === 'answer' ? 'agent' : 'activity';
+        setMessages(previous => {
+          const existing = previous.findIndex(item => item.key === key && item.turn === taskId && item.role === itemRole);
+          const item = {role: itemRole, key, turn: taskId, text};
+          if (existing === -1) return [...previous, item];
+          return previous.map((old, index) => index !== existing ? old :
+            type === 'answer' ? item : appendOutput(old, text));
+        });
+      }
+    });
+    return () => { stopOutput(); stopEvents(); };
   }, []);
+
+  function snapshot() {
+    if (!root || !chatId || !messages.length) return null;
+    return {id: chatId, title: messages.find(item => item.role === 'user')?.text || 'Новый чат',
+      agent, threadId: currentThreadId.current, messages};
+  }
+
+  async function persist() {
+    const chat = snapshot();
+    if (!chat) return;
+    await api.saveChat(root, chat);
+  }
+
+  useEffect(() => {
+    if (!root || !chatId || !messages.length) return;
+    const timer = setTimeout(() => {
+      persist().then(() => setHistoryError('')).catch(error => setHistoryError(cleanError(error)));
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [root, chatId, messages, threadId, agent]);
+
+  function showChat(chat) {
+    currentTaskId.current = null;
+    setChatId(chat?.id || crypto.randomUUID());
+    currentThreadId.current = chat?.threadId || '';
+    setThreadId(currentThreadId.current);
+    setAgent(chat?.agent || 'chat');
+    setMessages(chat?.messages || []);
+    setPrompt('');
+    setApprovals([]);
+    setDecisionError('');
+    setTerminal({text: '', truncated: false});
+  }
+
+  async function switchChat(id) {
+    if (taskLock.current) return;
+    await edit(async () => {
+      await persist();
+      const savedChats = await api.listChats();
+      setChatList(savedChats);
+      showChat(savedChats.find(item => item.id === id));
+    });
+  }
+
+  async function decide(approval, accept) {
+    if (decisionBusy) return;
+    setDecisionBusy(approval.key);
+    setDecisionError('');
+    try {
+      const sent = await api.decide(approval.taskId, approval.key, accept);
+      if (!sent) throw Error('Этот запрос уже закрыт.');
+      setMessages(previous => [...previous, {
+        role: 'activity', text: accept ? 'Вы подтвердили действие.' : 'Вы отклонили действие.',
+      }]);
+      setApprovals(previous => previous.filter(item => item.key !== approval.key));
+    } catch (error) {
+      setDecisionError(cleanError(error));
+    } finally {
+      setDecisionBusy('');
+    }
+  }
 
   function updateDiagnostic(result) {
     checkInitial.current = false;
@@ -217,7 +311,10 @@ function App() {
 
   useEffect(() => api.onCloseRequest(() => {
     edit(async () => {
-      if (await confirmEdits(tabs)) await api.closeWindow();
+      if (await confirmEdits(tabs)) {
+        await persist();
+        await api.closeWindow();
+      }
     });
   }));
 
@@ -225,6 +322,7 @@ function App() {
     if (taskLock.current) return;
     return edit(async () => {
       if (!await confirmEdits(tabs)) return;
+      await persist();
       const project = await api.chooseProject();
       if (!project) return;
       setRoot(project.root);
@@ -233,6 +331,9 @@ function App() {
       setActive('');
       setDrafts({});
       setSaved({});
+      const savedChats = await api.listChats();
+      setChatList(savedChats);
+      showChat(savedChats[0]);
     });
   }
 
@@ -264,11 +365,13 @@ function App() {
     taskLock.current = true;
     const question = prompt;
     const taskId = ++nextTaskId.current;
+    currentTaskId.current = taskId;
+    setDecisionError('');
     setPrompt('');
     setMessages(previous => [...previous, {role: 'user', text: question}, {role: 'agent', taskId, text: ''}]);
     setRunning(true);
     try {
-      const result = await api.runTask(question, agent, taskId);
+      const result = await api.runTask(question, agent, taskId, currentThreadId.current);
       setMessages(previous => [...previous, {
         role: 'result', taskId, text: resultText(result),
         ...(result.command && {command: result.command, question}),
@@ -276,6 +379,8 @@ function App() {
     } catch (error) {
       setMessages(previous => [...previous, {role: 'error', text: cleanError(error)}]);
     } finally {
+      setApprovals([]);
+      try { setFiles(await api.refreshProject()); } catch { /* keep the current list */ }
       taskLock.current = false;
       setRunning(false);
     }
@@ -349,13 +454,22 @@ function App() {
         </div>
       </main>
       <section className="assistant">
-        <header>✧ AI Ассистент <small>Локальный CLI</small></header>
+        <header>✧ AI Ассистент <small>SourceCraft CLI</small></header>
+        <div className="chat-toolbar">
+          <select aria-label="История чатов" value={chatList.some(chat => chat.id === chatId) ? chatId : ''}
+            disabled={!root || running || editorBusy} onChange={event => switchChat(event.target.value)}>
+            <option value="">{messages.find(item => item.role === 'user')?.text.slice(0, 55) || 'Новый чат'}</option>
+            {chatList.map(chat => <option key={chat.id} value={chat.id}>{chat.title}</option>)}
+          </select>
+          <button disabled={!root || running || editorBusy} onClick={() => switchChat('')}>Новый чат</button>
+        </div>
+        {historyError && <p className="history-error" role="status">{historyError}</p>}
         <div className="chat" {...chatScroll} tabIndex={0} role="region" aria-label="Диалог с ассистентом">
           {messages.length === 0 ? <div className="welcome-chat"><b>SOURCECRAFT</b>
             <p>Откройте проект, выберите агента и отправьте задачу.</p>
           </div> : messages.map((message, index) =>
             <div key={index} className={'message ' + message.role} hidden={message.role === 'agent' && !message.text}>
-              <b>{{user: 'Вы', agent: 'Агент', error: 'Ошибка', result: 'Статус'}[message.role]}</b><pre>{outputText(message)}</pre>
+              <b>{{user: 'Вы', agent: 'Агент', error: 'Ошибка', result: 'Статус', activity: 'Ход работы'}[message.role]}</b><pre>{outputText(message)}</pre>
               {message.command && <div className="approval-actions">
                 <p>Откройте PowerShell, вставьте команду и нажмите Enter. В открывшемся агенте отправьте запрос ещё раз и проверьте, какое действие он просит подтвердить.</p>
                 <button onClick={() => copy(message.command, message.taskId, 'Команда скопирована')}>Скопировать команду</button>
@@ -365,9 +479,25 @@ function App() {
             </div>
           )}
         </div>
+        {running && approvals.length > 0 && <section className="approval-panel" aria-label="Подтверждения агента">
+          {approvals.map(item => <div key={item.key} className="approval-request">
+            <b>{item.title}</b>
+            {item.reason && <p>{item.reason}</p>}
+            <pre tabIndex={0}>{item.details}</pre>
+            <div className="approval-actions">
+              <button className="primary" disabled={Boolean(decisionBusy)}
+                onClick={() => decide(item, true)}>Разрешить один раз</button>
+              <button disabled={Boolean(decisionBusy)} onClick={() => decide(item, false)}>Отклонить</button>
+            </div>
+          </div>)}
+          {decisionError && <p role="alert">{decisionError}</p>}
+        </section>}
         <div className="composer">
-          <select value={agent} onChange={event => setAgent(event.target.value)} aria-label="Агент">
-            <option value="ycodex">YCodex</option><option value="codex">Codex</option>
+          <select value={agent} disabled={running || messages.length > 0}
+            onChange={event => setAgent(event.target.value)} aria-label="Агент">
+            <option value="chat">Чат SourceCraft</option>
+            <option value="ycodex">YCodex · разовый запрос</option>
+            <option value="codex">Codex · разовый запрос</option>
           </select>
           <textarea maxLength={12000} value={prompt} onChange={event => setPrompt(event.target.value)}
             onKeyDown={event => {

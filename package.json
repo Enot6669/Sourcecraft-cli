@@ -1,6 +1,6 @@
 {
   "name": "sourcecraft-studio",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "type": "module",
   "main": "electron/main.cjs",
@@ -40,6 +40,7 @@
       "target": "nsis"
     },
     "nsis": {
+      "artifactName": "SourceCraft-Studio-Setup-v.${version}.${ext}",
       "oneClick": false,
       "allowToChangeInstallationDirectory": true
     }

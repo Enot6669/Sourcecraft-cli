@@ -128,4 +128,4 @@ function runCli(file, args, {
   });
 }
 
-module.exports = {runCli, cliEnvironment};
+module.exports = {runCli, cliEnvironment, killTree};

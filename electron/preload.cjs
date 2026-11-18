@@ -7,13 +7,18 @@ function subscribe(channel, callback) {
 }
 
 contextBridge.exposeInMainWorld('studio', {
+  refreshProject: () => ipcRenderer.invoke('project:refresh'),
   chooseProject: () => ipcRenderer.invoke('project:choose'),
   readFile: file => ipcRenderer.invoke('file:read', file),
   saveFile: (file, text, expected) => ipcRenderer.invoke('file:save', file, text, expected),
   confirmEdits: count => ipcRenderer.invoke('editor:confirm', count),
   closeWindow: () => ipcRenderer.invoke('editor:close'),
   onCloseRequest: callback => subscribe('editor:requestClose', callback),
-  runTask: (prompt, agent, taskId) => ipcRenderer.invoke('agent:run', prompt, agent, taskId),
+  runTask: (prompt, agent, taskId, threadId) => ipcRenderer.invoke('agent:run', prompt, agent, taskId, threadId),
+  listChats: () => ipcRenderer.invoke('chat:list'),
+  saveChat: (directory, chat) => ipcRenderer.invoke('chat:save', directory, chat),
+  decide: (taskId, key, accept) => ipcRenderer.invoke('agent:decision', taskId, key, accept),
+  onAgentEvent: callback => subscribe('agent:event', callback),
   copyText: text => ipcRenderer.invoke('clipboard:copy', text),
   cancelTask: () => ipcRenderer.invoke('agent:cancel'),
   checkCli: () => ipcRenderer.invoke('agent:check'),
