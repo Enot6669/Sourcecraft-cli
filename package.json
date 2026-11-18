@@ -9,7 +9,7 @@
     "build": "vite build",
     "start": "electron .",
     "desktop:dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron .\"",
-    "dist:win": "npm run build && electron-builder --win nsis",
+    "dist:win": "npm run build && electron-builder --win nsis --publish never",
     "test": "node --test electron/*.test.cjs"
   },
   "dependencies": {
