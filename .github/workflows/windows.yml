@@ -19,10 +19,16 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run dist:win
-      - name: Check packaged application opens
+      - name: Exercise the Studio interface
+        run: node tests/desktop-smoke.cjs
+      - name: Install and open SourceCraft Studio
         shell: pwsh
         run: |
-          $exe = (Resolve-Path 'release/win-unpacked/SourceCraft Studio.exe').Path
+          $installer = (Get-ChildItem 'release/*.exe' | Select-Object -First 1).FullName
+          $destination = Join-Path $env:RUNNER_TEMP 'sourcecraft-studio-installed'
+          $install = Start-Process -FilePath $installer -ArgumentList "/S /D=$destination" -PassThru -Wait -WindowStyle Hidden
+          if ($install.ExitCode -ne 0) { throw "Installer failed (code $($install.ExitCode))." }
+          $exe = (Resolve-Path (Join-Path $destination 'SourceCraft Studio.exe')).Path
           $process = Start-Process -FilePath $exe -PassThru
           try {
             $deadline = (Get-Date).AddSeconds(30)
@@ -32,7 +38,7 @@ jobs:
               if ($process.HasExited) { throw "Studio exited before opening a window (code $($process.ExitCode))." }
               if ($process.MainWindowTitle -eq 'SourceCraft Studio') { break }
             } while ((Get-Date) -lt $deadline)
-            if ($process.MainWindowTitle -ne 'SourceCraft Studio') { throw 'Studio did not open its main window.' }
+            if ($process.MainWindowTitle -ne 'SourceCraft Studio') { throw 'The installed Studio did not open.' }
           } finally {
             if (!$process.HasExited) { Stop-Process -Id $process.Id -Force }
           }
