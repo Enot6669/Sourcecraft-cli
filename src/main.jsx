@@ -1,6 +1,7 @@
 import React, {useEffect, useLayoutEffect, useRef, useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import './style.css';
+import {ProjectFiles} from './project-files.jsx';
 import {version} from '../package.json';
 
 const api = window.studio;
@@ -191,6 +192,7 @@ function App() {
   const [diagnostic, setDiagnostic] = useState(null);
   const [root, setRoot] = useState('');
   const [files, setFiles] = useState([]);
+  const [fileRevision, setFileRevision] = useState(0);
   const [tabs, setTabs] = useState([]);
   const [active, setActive] = useState('');
   const [drafts, setDrafts] = useState({});
@@ -368,6 +370,7 @@ function App() {
       if (!project) return;
       setRoot(project.root);
       setFiles(project.files);
+      setFileRevision(revision => revision + 1);
       setTabs([]);
       setActive('');
       setDrafts({});
@@ -421,6 +424,7 @@ function App() {
     } finally {
       setApprovals([]);
       try { setFiles(await api.refreshProject()); } catch { /* keep the current list */ }
+      setFileRevision(revision => revision + 1);
       taskLock.current = false;
       setRunning(false);
     }
@@ -448,9 +452,8 @@ function App() {
         <button className="primary" disabled={!canSwitch} onClick={openProject}>📁 Открыть проект</button>
         <div className="section">ФАЙЛЫ ПРОЕКТА</div>
         <div className="path">{root || 'Выберите папку проекта'}</div>
-        <div className="files">{files.map(file =>
-          <button key={file} disabled={editorBusy} className={active === file ? 'selected' : ''} onClick={() => openFile(file)}>▤ {file}</button>
-        )}</div>
+        <ProjectFiles key={root} entries={files} root={root} revision={fileRevision} active={active}
+          disabled={editorBusy} onOpenFile={openFile} readFolder={api.readFolder} />
         <button className="sourcecraft-usage" title="Просмотреть квоту и расход нейрокредитов в браузере"
           onClick={() => api.openUsage().catch(error => alert(cleanError(error)))}>
           Квоты SourceCraft <span aria-hidden="true">↗</span>

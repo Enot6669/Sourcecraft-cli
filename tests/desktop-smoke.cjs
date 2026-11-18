@@ -25,6 +25,10 @@ if (typeof electron === 'string') {
       const node = process.argv.at(-1);
       await fs.copyFile(node, path.join(cliDir, 'src.exe'));
       const fixture = path.join(project, 'notes.txt');
+      const scripts = path.join(project, 'BystrorezKnife', 'Scripts');
+      await fs.mkdir(scripts, {recursive: true});
+      await fs.writeFile(path.join(scripts, 'Nested.txt'), 'Nested file contents');
+      await fs.mkdir(path.join(project, 'Empty'));
       await Promise.all([
         fs.writeFile(fixture, 'Original'),
         fs.writeFile(path.join(project, 'version'), 'console.log("Version: 0.0.122\\nGit Commit: 12345678");'),
@@ -74,6 +78,18 @@ if (typeof electron === 'string') {
 
       await click('.sidebar button', 'Открыть проект');
       await waitForText('.files', 'notes.txt');
+      await waitForText('.files', 'BystrorezKnife');
+      assert.equal(await js('document.querySelector(".project-folder").open'), false);
+      assert.equal(await has('.files', 'Nested.txt'), false);
+      assert.equal(await js('window.studio.readFolder(document.querySelector(".sidebar .path").textContent, "..").then(() => false, () => true)'), true);
+      await click('.files summary', 'BystrorezKnife');
+      await waitForText('.files', 'Scripts');
+      await click('.files summary', 'Scripts');
+      await waitForText('.files', 'Nested.txt');
+      await click('.files button', 'Nested.txt');
+      await waitFor(() => js('document.querySelector(".code")?.value === "Nested file contents"'), 'nested file opens');
+      await click('.files summary', 'Empty');
+      await waitForText('.files', 'Нет отображаемых файлов');
       await click('.files button', 'notes.txt');
       await waitFor(() => js('document.querySelector(".code")?.value === "Original"'), 'editor contents');
       await input('.code', 'Updated');

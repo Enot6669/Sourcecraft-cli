@@ -7,6 +7,7 @@ function subscribe(channel, callback) {
 }
 
 contextBridge.exposeInMainWorld('studio', {
+  readFolder: (root, relative) => ipcRenderer.invoke('project:folder', root, relative),
   refreshProject: () => ipcRenderer.invoke('project:refresh'),
   chooseProject: () => ipcRenderer.invoke('project:choose'),
   readFile: file => ipcRenderer.invoke('file:read', file),

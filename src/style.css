@@ -45,3 +45,10 @@
 .approval-details pre{max-height:none;margin:6px 0}
 
 .sourcecraft-usage{margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;text-align:left;color:#c1cdff}
+
+.project-folder summary{cursor:pointer;padding:8px;border-radius:8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#d4dcf1}
+.project-folder summary:hover{background:#263149}
+.project-folder summary:focus-visible{outline:2px solid #9366ff;outline-offset:-2px}
+.project-folder summary::marker{color:#a89be8}
+.project-children{margin-left:12px;padding-left:3px;border-left:1px solid #343e54}
+.project-children>p{margin:2px 0;padding:5px 8px;color:#a4b2cc;font-size:12px;overflow-wrap:anywhere}

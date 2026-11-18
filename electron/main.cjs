@@ -102,31 +102,34 @@ app.on('before-quit', event => {
   stopTask(activeTask).then(() => app.quit());
 });
 
-async function listFiles(directory) {
-  const output = [];
-  const ignored = new Set(['.git', 'node_modules', 'dist', 'release', '.next', 'build']);
-  async function walk(folder, depth) {
-    if (depth > 5 || output.length >= 700) return;
-    for (const entry of await fs.readdir(folder, {withFileTypes: true})) {
-      if (output.length >= 700) break;
-      if (ignored.has(entry.name)) continue;
-      const full = path.join(folder, entry.name);
-      if (entry.isDirectory()) await walk(full, depth + 1);
-      else if (entry.isFile()) output.push(path.relative(directory, full));
-    }
-  }
-  await walk(directory, 0);
-  return output;
+const ignoredFolders = new Set(['.git', 'node_modules', 'dist', 'release', '.next', 'build']);
+const fileNameOrder = new Intl.Collator('ru', {numeric: true, sensitivity: 'base'});
+
+async function listFolder(folder, relative = '') {
+  const entries = await fs.readdir(folder, {withFileTypes: true});
+  return entries.flatMap(entry => {
+    const isFolder = entry.isDirectory();
+    if (isFolder ? ignoredFolders.has(entry.name) : !entry.isFile()) return [];
+    return [{name: entry.name, path: path.join(relative, entry.name), isFolder}];
+  }).sort((a, b) => Number(b.isFolder) - Number(a.isFolder) || fileNameOrder.compare(a.name, b.name));
 }
 
-handle('project:refresh', () => root ? listFiles(root) : []);
+handle('project:refresh', () => root ? listFolder(root) : []);
+
+handle('project:folder', async (expectedRoot, relative) => {
+  const directory = root;
+  if (!directory || expectedRoot !== directory) throw Error('Проект был изменён.');
+  const folder = await fs.realpath(resolveWithin(directory, relative));
+  if (!within(directory, folder)) throw Error('Ссылка ведёт за пределы проекта');
+  return listFolder(folder, path.relative(directory, folder));
+});
 
 handle('project:choose', async () => {
   if (activeTask) throw Error('Дождитесь завершения задачи');
   const result = await dialog.showOpenDialog(win, {properties: ['openDirectory']});
   if (result.canceled) return null;
   const directory = await fs.realpath(result.filePaths[0]);
-  const files = await listFiles(directory);
+  const files = await listFolder(directory);
   root = directory;
   return {root, files};
 });
