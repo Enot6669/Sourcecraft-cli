@@ -48,6 +48,8 @@ function runCli(file, args, {
     let bytes = 0;
     let outcome;
     let finished = false;
+    let recentOutput = '';
+    let approvalRequired = false;
     let pending = '';
     let outputTimer;
     let stopTimer;
@@ -63,6 +65,10 @@ function runCli(file, args, {
 
     function queue(text) {
       if (text.trim()) clearTimeout(startupTimer);
+      if (!approvalRequired) {
+        recentOutput = (recentOutput + text).slice(-4096);
+        approvalRequired = /headless\s+Codex\s+execution\s+requires\s+approval/i.test(recentOutput);
+      }
       pending += text;
       outputTimer ??= setTimeout(flush, outputIntervalMs);
     }
@@ -75,7 +81,8 @@ function runCli(file, args, {
       clearTimeout(stopTimer);
       signal?.removeEventListener('abort', cancel);
       flush();
-      resolve({status, code: code ?? -1});
+      const exitCode = code === 0xffffffff ? -1 : (code ?? -1);
+      resolve({status: status === 'failed' && approvalRequired ? 'approval-required' : status, code: exitCode});
     }
 
     function stop(status) {

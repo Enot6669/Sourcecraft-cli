@@ -107,3 +107,20 @@ test('returns a spawn error and does not keep timers alive', async () => {
   assert.equal(result.status, 'failed');
   assert.match(output, /ENOENT/);
 });
+
+test('recognizes the real headless approval error and normalizes Windows exit -1', async () => {
+  const result = await node(
+    'process.stderr.write("connection closed: headless Codex execution\\n");' +
+    'setTimeout(() => { process.stderr.write("requires approval; use interactive src codex\\n"); process.exitCode = -1; }, 150);',
+  );
+  assert.equal(result.status, 'approval-required');
+  assert.equal(result.code, process.platform === 'win32' ? -1 : 255);
+  assert.match(result.output, /use interactive src codex/);
+});
+
+test('interactive command uses the chosen agent and quotes literal paths', () => {
+  const {interactiveCommand} = require('./interactive.cjs');
+  assert.equal(interactiveCommand("D:\\team's [project]", "C:\\source craft\\src.exe", 'ycodex'),
+    "Set-Location -LiteralPath 'D:\\team''s [project]' -ErrorAction Stop; & 'C:\\source craft\\src.exe' ycodex");
+  assert.throws(() => interactiveCommand('D:\\team', 'C:\\src.exe', 'unknown'));
+});

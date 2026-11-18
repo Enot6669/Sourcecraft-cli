@@ -12,7 +12,7 @@ if (typeof electron === 'string') {
   if (run.error) console.error(run.error);
   process.exitCode = run.status ?? 1;
 } else {
-  const {app, BrowserWindow, dialog} = electron;
+  const {app, BrowserWindow, dialog, clipboard} = electron;
   const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
   async function verify() {
@@ -34,6 +34,9 @@ if (typeof electron === 'string') {
           'if (process.argv[4] === "cancel me") {',
           '  console.log("CANCEL_READY");',
           '  setInterval(() => {}, 100);',
+          '} else if (process.argv[4] === "needs approval") {',
+          '  console.error("headless Codex execution requires approval; use interactive src codex");',
+          '  process.exitCode = -1;',
           '} else {',
           '  process.stderr.write("\\x1b[2K⠋ Starting up...\\x1b[2K⠹ Connected\\r\\n");',
           '  process.stdout.write("Old value\\rNew value\\r\\n");',
@@ -109,6 +112,17 @@ if (typeof electron === 'string') {
       assert.equal(await js('document.querySelector(".chat").scrollTop'), 0, 'chat moved while reading older output');
       await click('.composer button', 'Остановить');
       await waitForText('.chat', 'Задача отменена');
+      await input('.composer textarea', 'needs approval');
+      await click('.composer button', 'Запустить');
+      await waitForText('.chat', 'Агенту нужно ваше подтверждение');
+      await click('.approval-actions button', 'Скопировать команду');
+      await waitForText('.approval-actions', 'Команда скопирована');
+      assert.equal(clipboard.readText(), "Set-Location -LiteralPath '" + project +
+        "' -ErrorAction Stop; & '" + path.join(cliDir, 'src.exe') + "' ycodex");
+      await click('.approval-actions button', 'Скопировать запрос');
+      await waitForText('.approval-actions', 'Запрос скопирован');
+      assert.equal(clipboard.readText(), 'needs approval');
+      assert.equal(await js('[...document.querySelectorAll(".message")].slice(-2).map(el => el.classList[1]).join(",")'), 'agent,result');
       console.log('Desktop smoke passed: CLI detection, authentication UI, editor save, clean output, scroll, cancellation');
     } finally {
       process.chdir(os.tmpdir());

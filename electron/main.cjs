@@ -3,7 +3,8 @@ const path = require('node:path');
 const {randomUUID} = require('node:crypto');
 const {pathToFileURL} = require('node:url');
 const {runCli} = require('./run-cli.cjs');
-const {app, BrowserWindow, ipcMain, dialog} = require('electron');
+const {interactiveCommand} = require('./interactive.cjs');
+const {app, BrowserWindow, ipcMain, dialog, clipboard} = require('electron');
 const {resolveWithin, within} = require('./paths.cjs');
 const {checkAuth, checkExecutable, findCli} = require('./cli.cjs');
 
@@ -216,7 +217,13 @@ async function stopTask(task) {
   return result?.status !== 'stop-failed';
 }
 
-handle('agent:run', async (prompt, agent) => {
+handle('clipboard:copy', text => {
+  if (typeof text !== 'string' || text.length > 16000) throw Error('Не удалось скопировать текст');
+  clipboard.writeText(text);
+});
+
+handle('agent:run', async (prompt, agent, taskId) => {
+  if (!Number.isSafeInteger(taskId) || taskId < 1) throw Error('Некорректный номер задачи');
   const directory = root;
   if (!directory) throw Error('Сначала откройте проект');
   if (activeTask || savingSettings) throw Error('Дождитесь завершения текущей операции');
@@ -229,13 +236,22 @@ handle('agent:run', async (prompt, agent) => {
   task.finished = (async () => {
     const {signal} = task.controller;
     const cli = await findCli(cliPath, undefined, signal);
-    if (signal.aborted) return {status: 'cancelled', code: -1};
+    if (signal.aborted) {
+      const result = {status: 'cancelled', code: -1};
+      send('agent:output', {taskId, result});
+      return result;
+    }
     if (!cli.ok) throw Error(cli.message);
-    return runCli(cli.path, ['do', flags[agent], '--', prompt], {
+    const result = await runCli(cli.path, ['do', flags[agent], '--', prompt], {
       cwd: directory,
       signal,
-      onOutput: text => send('agent:output', {text}),
+      onOutput: text => send('agent:output', {taskId, text}),
     });
+    send('agent:output', {taskId, result});
+    if (result.status === 'approval-required') {
+      return {...result, command: interactiveCommand(directory, cli.path, agent)};
+    }
+    return result;
   })().finally(() => { activeTask = null; });
   return task.finished;
 });

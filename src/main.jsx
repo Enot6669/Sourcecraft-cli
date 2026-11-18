@@ -8,11 +8,13 @@ const cleanError = error => error.message.replace(/^Error invoking remote method
 const taskResults = {
   completed: 'Задача завершена',
   cancelled: 'Задача отменена',
+  'approval-required': 'Агенту нужно ваше подтверждение в PowerShell.',
   'output-limit': 'Задача остановлена по лимиту вывода',
   'startup-timeout': 'Агент не начал отвечать вовремя. Проверьте подключение и авторизацию CLI.',
   timeout: 'Задача остановлена по истечении времени ожидания.',
   'stop-failed': 'Не удалось завершить процесс CLI.',
 };
+const resultText = result => taskResults[result.status] || 'Ошибка выполнения, код ' + result.code;
 const authLabels = {
   'signed-in': 'Вход выполнен',
   'signed-out': 'Требуется вход',
@@ -154,6 +156,8 @@ function App() {
   const [showTerminal, setShowTerminal] = useState(true);
   const editorLock = useRef(false);
   const taskLock = useRef(false);
+  const nextTaskId = useRef(0);
+  const [copyNotice, setCopyNotice] = useState(null);
   const checkInitial = useRef(true);
   const chatScroll = useFollowOutput(messages);
   const terminalScroll = useFollowOutput(terminal, showTerminal);
@@ -165,15 +169,14 @@ function App() {
     }).catch(error => {
       if (checkInitial.current) setDiagnostic({ok: false, message: cleanError(error)});
     });
-    return api.onOutput(({text}) => {
+    return api.onOutput(({taskId, text, result}) => {
+      if (result) {
+        setTerminal(previous => appendOutput(previous, '\n[' + resultText(result) + ']\n'));
+        return;
+      }
       setTerminal(previous => appendOutput(previous, text));
-      setMessages(items => {
-        const last = items.at(-1);
-        if (last?.role === 'agent') {
-          return [...items.slice(0, -1), appendOutput(last, text)];
-        }
-        return [...items, appendOutput({role: 'agent', text: ''}, text)];
-      });
+      setMessages(items => items.map(item =>
+        item.role === 'agent' && item.taskId === taskId ? appendOutput(item, text) : item));
     });
   }, []);
 
@@ -260,19 +263,30 @@ function App() {
     if (!prompt.trim() || taskLock.current || editorLock.current || !root || !diagnostic?.ok) return;
     taskLock.current = true;
     const question = prompt;
+    const taskId = ++nextTaskId.current;
     setPrompt('');
-    setMessages(previous => [...previous, {role: 'user', text: question}]);
+    setMessages(previous => [...previous, {role: 'user', text: question}, {role: 'agent', taskId, text: ''}]);
     setRunning(true);
     try {
-      const result = await api.runTask(question, agent);
-      const status = taskResults[result.status] || 'Ошибка выполнения, код ' + result.code;
-      setTerminal(previous => appendOutput(previous, '\n[' + status + ']\n'));
-      setMessages(previous => [...previous, {role: 'result', text: status}]);
+      const result = await api.runTask(question, agent, taskId);
+      setMessages(previous => [...previous, {
+        role: 'result', taskId, text: resultText(result),
+        ...(result.command && {command: result.command, question}),
+      }]);
     } catch (error) {
       setMessages(previous => [...previous, {role: 'error', text: cleanError(error)}]);
     } finally {
       taskLock.current = false;
       setRunning(false);
+    }
+  }
+
+  async function copy(text, taskId, label) {
+    try {
+      await api.copyText(text);
+      setCopyNotice({taskId, label});
+    } catch (error) {
+      setCopyNotice({taskId, label: cleanError(error)});
     }
   }
 
@@ -340,8 +354,14 @@ function App() {
           {messages.length === 0 ? <div className="welcome-chat"><b>SOURCECRAFT</b>
             <p>Откройте проект, выберите агента и отправьте задачу.</p>
           </div> : messages.map((message, index) =>
-            <div key={index} className={'message ' + message.role}>
+            <div key={index} className={'message ' + message.role} hidden={message.role === 'agent' && !message.text}>
               <b>{{user: 'Вы', agent: 'Агент', error: 'Ошибка', result: 'Статус'}[message.role]}</b><pre>{outputText(message)}</pre>
+              {message.command && <div className="approval-actions">
+                <p>Откройте PowerShell, вставьте команду и нажмите Enter. В открывшемся агенте отправьте запрос ещё раз и проверьте, какое действие он просит подтвердить.</p>
+                <button onClick={() => copy(message.command, message.taskId, 'Команда скопирована')}>Скопировать команду</button>
+                <button onClick={() => copy(message.question, message.taskId, 'Запрос скопирован')}>Скопировать запрос</button>
+                {copyNotice?.taskId === message.taskId && <small role="status">{copyNotice.label}</small>}
+              </div>}
             </div>
           )}
         </div>
