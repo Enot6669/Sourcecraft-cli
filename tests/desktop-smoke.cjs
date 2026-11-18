@@ -117,11 +117,11 @@ if (typeof electron === 'string') {
       await waitForText('.chat', 'Агенту нужно ваше подтверждение');
       await click('.approval-actions button', 'Скопировать команду');
       await waitForText('.approval-actions', 'Команда скопирована');
-      assert.equal(clipboard.readText(), "Set-Location -LiteralPath '" + project +
+      assert.equal(await clipboard.readText(), "Set-Location -LiteralPath '" + await fs.realpath(project) +
         "' -ErrorAction Stop; & '" + path.join(cliDir, 'src.exe') + "' ycodex");
       await click('.approval-actions button', 'Скопировать запрос');
       await waitForText('.approval-actions', 'Запрос скопирован');
-      assert.equal(clipboard.readText(), 'needs approval');
+      assert.equal(await clipboard.readText(), 'needs approval');
       assert.equal(await js('[...document.querySelectorAll(".message")].slice(-2).map(el => el.classList[1]).join(",")'), 'agent,result');
       console.log('Desktop smoke passed: CLI detection, authentication UI, editor save, clean output, scroll, cancellation');
     } finally {

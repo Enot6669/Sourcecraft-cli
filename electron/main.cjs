@@ -219,7 +219,7 @@ async function stopTask(task) {
 
 handle('clipboard:copy', text => {
   if (typeof text !== 'string' || text.length > 16000) throw Error('Не удалось скопировать текст');
-  clipboard.writeText(text);
+  return clipboard.writeText(text);
 });
 
 handle('agent:run', async (prompt, agent, taskId) => {
