@@ -1,6 +1,24 @@
-const {contextBridge,ipcRenderer}=require('electron');
-contextBridge.exposeInMainWorld('studio',{
-chooseProject:()=>ipcRenderer.invoke('project:choose'),listFiles:()=>ipcRenderer.invoke('project:list'),readFile:p=>ipcRenderer.invoke('file:read',p),saveFile:(p,content)=>ipcRenderer.invoke('file:save',p,content),
-runTask:(prompt,agent)=>ipcRenderer.invoke('agent:run',prompt,agent),cancelTask:()=>ipcRenderer.invoke('agent:cancel'),checkCli:()=>ipcRenderer.invoke('agent:check'),getSettings:()=>ipcRenderer.invoke('settings:get'),chooseCli:()=>ipcRenderer.invoke('settings:choose'),setCliPath:p=>ipcRenderer.invoke('settings:setCliPath',p),checkAuth:()=>ipcRenderer.invoke('agent:auth'),
-onOutput:fn=>{const handler=(_e,data)=>fn(data);ipcRenderer.on('agent:output',handler);return ()=>ipcRenderer.removeListener('agent:output',handler);}
+const {contextBridge, ipcRenderer} = require('electron');
+
+function subscribe(channel, callback) {
+  const handler = (_event, data) => callback(data);
+  ipcRenderer.on(channel, handler);
+  return () => ipcRenderer.removeListener(channel, handler);
+}
+
+contextBridge.exposeInMainWorld('studio', {
+  chooseProject: () => ipcRenderer.invoke('project:choose'),
+  readFile: file => ipcRenderer.invoke('file:read', file),
+  saveFile: (file, text, expected) => ipcRenderer.invoke('file:save', file, text, expected),
+  confirmEdits: count => ipcRenderer.invoke('editor:confirm', count),
+  closeWindow: () => ipcRenderer.invoke('editor:close'),
+  onCloseRequest: callback => subscribe('editor:requestClose', callback),
+  runTask: (prompt, agent) => ipcRenderer.invoke('agent:run', prompt, agent),
+  cancelTask: () => ipcRenderer.invoke('agent:cancel'),
+  checkCli: () => ipcRenderer.invoke('agent:check'),
+  checkAuth: () => ipcRenderer.invoke('agent:auth'),
+  getSettings: () => ipcRenderer.invoke('settings:get'),
+  chooseCli: () => ipcRenderer.invoke('settings:choose'),
+  setCliPath: file => ipcRenderer.invoke('settings:setCliPath', file),
+  onOutput: callback => subscribe('agent:output', callback),
 });

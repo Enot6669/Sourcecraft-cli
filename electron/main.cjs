@@ -1,36 +1,302 @@
-const fs=require('node:fs/promises');
-const path=require('node:path');
-const os=require('node:os');
-const {spawn}=require('node:child_process');
-const {app,BrowserWindow,ipcMain,dialog}=require('electron');
-const {resolveWithin,within}=require('./paths.cjs');
-let win,root=null,child=null;
-const settingsFile=()=>path.join(app.getPath('userData'),'settings.json');
-let settings={cliPath:''};
-async function loadSettings(){try{const x=JSON.parse(await fs.readFile(settingsFile(),'utf8'));settings.cliPath=typeof x.cliPath==='string'?x.cliPath:'';}catch{}}
-async function saveSettings(){await fs.mkdir(path.dirname(settingsFile()),{recursive:true});await fs.writeFile(settingsFile(),JSON.stringify(settings,null,2),'utf8');}
-function send(data){if(win&&!win.isDestroyed())win.webContents.send('agent:output',data);}
-function createWindow(){win=new BrowserWindow({width:1440,height:900,minWidth:900,minHeight:600,backgroundColor:'#0d111b',webPreferences:{preload:path.join(__dirname,'preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true}});
-if(!app.isPackaged)win.loadURL('http://127.0.0.1:5173');else win.loadFile(path.join(__dirname,'../dist/index.html'));
-win.webContents.setWindowOpenHandler(()=>({action:'deny'}));}
-app.whenReady().then(async()=>{await loadSettings();createWindow();app.on('activate',()=>{if(BrowserWindow.getAllWindows().length===0)createWindow();});});
-app.on('window-all-closed',()=>{if(process.platform!=='darwin')app.quit();});
-app.on('before-quit',()=>{if(child)child.kill();});
-ipcMain.handle('project:choose',async()=>{const result=await dialog.showOpenDialog(win,{properties:['openDirectory']});if(result.canceled)return null;root=await fs.realpath(result.filePaths[0]);return root;});
-async function checkedFile(rel){if(!root)throw Error('Сначала откройте проект');const full=resolveWithin(root,rel),real=await fs.realpath(full);if(!within(root,real))throw Error('Symlink outside project');const st=await fs.stat(real);if(!st.isFile()||st.size>2*1024*1024)throw Error('Invalid file size');return real;}
-ipcMain.handle('project:list',async()=>{if(!root)return [];const output=[],ignored=new Set(['.git','node_modules','dist','release','.next','build']);async function walk(dir,depth){if(depth>5||output.length>=700)return;for(const entry of await fs.readdir(dir,{withFileTypes:true})){if(output.length>=700)break;if(ignored.has(entry.name))continue;const full=path.join(dir,entry.name);if(entry.isSymbolicLink())continue;if(entry.isDirectory())await walk(full,depth+1);else if(entry.isFile())output.push(path.relative(root,full));}}await walk(root,0);return output;});
-ipcMain.handle('file:read',async(_e,p)=>fs.readFile(await checkedFile(p),'utf8'));
-ipcMain.handle('file:save',async(_e,p,content)=>{if(typeof content!=='string'||Buffer.byteLength(content)>2*1024*1024)throw Error('Content too large');await fs.writeFile(await checkedFile(p),content,'utf8');return true;});
-function execute(file,args,{cwd,timeout=8000}={}){return new Promise(resolve=>{let output='',done=false;const finish=(result)=>{if(done)return;done=true;clearTimeout(timer);resolve(result);};let proc;try{proc=spawn(file,args,{cwd,shell:false,windowsHide:true,env:process.env});}catch(e){return resolve({ok:false,output:e.message,code:-1});}const timer=setTimeout(()=>{proc.kill();finish({ok:false,output:'Timed out',code:-1});},timeout);for(const stream of [proc.stdout,proc.stderr])stream.on('data',d=>{if(output.length<8000)output+=d.toString().slice(0,8000-output.length)});proc.on('error',e=>finish({ok:false,output:e.message,code:-1}));proc.on('close',code=>finish({ok:code===0,output:output.trim(),code}));});}
-async function locate(){if(settings.cliPath){try{const st=await fs.stat(settings.cliPath);if(st.isFile())return settings.cliPath;}catch{}return null;}
-const candidates=[];for(const dir of (process.env.PATH||'').split(path.delimiter)){if(dir)candidates.push(path.join(dir,process.platform==='win32'?'src.exe':'src'));}
-for(const candidate of candidates){try{const st=await fs.stat(candidate);if(st.isFile())return candidate;}catch{}}return null;}
-async function diagnostics(){const cliPath=await locate();if(!cliPath)return {ok:false,path:settings.cliPath||'',version:'',auth:'unknown',message:'CLI не найден. Укажите путь к src.exe или добавьте его в PATH.'};const help=await execute(cliPath,['--help']);const version=await execute(cliPath,['--version']);return {ok:help.ok||version.ok,path:cliPath,version:version.output.slice(0,500),auth:'unknown',message:help.ok?'CLI доступен. Авторизация не проверена.':'Не удалось подтвердить запуск CLI: '+help.output.slice(0,500)};}
-ipcMain.handle('settings:get',async()=>({cliPath:settings.cliPath}));
-ipcMain.handle('settings:choose',async()=>{const result=await dialog.showOpenDialog(win,{properties:['openFile'],filters:[{name:'CLI executable',extensions:process.platform==='win32'?['exe']:['*']}]});if(result.canceled)return null;return result.filePaths[0];});
-ipcMain.handle('settings:setCliPath',async(_e,p)=>{if(child)throw Error('Дождитесь завершения задачи');if(typeof p!=='string'||p.length>2048)throw Error('Invalid path');if(p){if(!path.isAbsolute(p)||path.extname(p).toLowerCase()!=='.exe'&&process.platform==='win32')throw Error('Укажите абсолютный путь к src.exe');const stat=await fs.stat(p);if(!stat.isFile())throw Error('Not a file');}settings.cliPath=p;await saveSettings();return diagnostics();});
-ipcMain.handle('agent:check',diagnostics);
-ipcMain.handle('agent:auth',async()=>({status:'unknown',message:'Проверка авторизации пока не поддерживается: для установленной версии CLI не подтверждена безопасная команда статуса. Проверьте вход через официальный CLI.'}));
-ipcMain.handle('agent:run',async(_e,prompt,agent)=>{if(!root)throw Error('Сначала откройте проект');if(child)throw Error('Задача уже выполняется');if(typeof prompt!=='string'||!prompt.trim()||prompt.length>12000)throw Error('Invalid prompt');const flags={ycodex:'--ycodex',codex:'--codex'};if(!Object.hasOwn(flags,agent))throw Error('Unsupported agent');const cliPath=await locate();if(!cliPath)throw Error('CLI не найден. Откройте настройки.');
-return new Promise(resolve=>{let done=false;const finish=result=>{if(done)return;done=true;child=null;resolve(result);};const p=spawn(cliPath,['do',flags[agent],prompt],{cwd:root,shell:false,windowsHide:true,env:process.env});child=p;let bytes=0,limited=false;for(const stream of [p.stdout,p.stderr])stream.on('data',buf=>{bytes+=buf.length;if(bytes<4*1024*1024)send({kind:stream===p.stdout?'stdout':'stderr',text:buf.toString('utf8')});else if(!limited){limited=true;send({kind:'stderr',text:'\nOutput limit reached; task stopped.\n'});p.kill();}});p.on('error',e=>{send({kind:'stderr',text:e.message});finish({code:-1});});p.on('close',code=>finish({code:code??-1}));});});
-ipcMain.handle('agent:cancel',async()=>{if(!child)return false;child.kill();return true;});
+const fs = require('node:fs/promises');
+const path = require('node:path');
+const {randomUUID} = require('node:crypto');
+const {spawn, execFile} = require('node:child_process');
+const {pathToFileURL} = require('node:url');
+const {StringDecoder} = require('node:string_decoder');
+const {app, BrowserWindow, ipcMain, dialog} = require('electron');
+const {resolveWithin, within} = require('./paths.cjs');
+const {checkAuth, checkExecutable, findCli} = require('./cli.cjs');
+
+const devUrl = 'http://127.0.0.1:5173/';
+const indexPath = path.join(__dirname, '../dist/index.html');
+const useDevServer = !app.isPackaged && process.argv.includes('--studio-dev');
+const rendererUrl = useDevServer ? devUrl : pathToFileURL(indexPath).href;
+const fileLimit = 2 * 1024 * 1024;
+const outputLimit = 4 * 1024 * 1024;
+
+let win;
+let root = null;
+let activeTask = null;
+let cliPath = '';
+let savingSettings = false;
+let allowClose = false;
+let rendererReady = false;
+
+const settingsFile = () => path.join(app.getPath('userData'), 'settings.json');
+
+async function loadSettings() {
+  try {
+    const settings = JSON.parse(await fs.readFile(settingsFile(), 'utf8'));
+    if (typeof settings.cliPath === 'string' && path.isAbsolute(settings.cliPath)) cliPath = settings.cliPath;
+  } catch (error) {
+    if (error.code !== 'ENOENT') console.error('Could not read CLI settings', error);
+  }
+}
+
+async function saveSettings(selectedPath) {
+  const file = settingsFile();
+  const temporary = file + '.' + randomUUID() + '.tmp';
+  await fs.mkdir(path.dirname(file), {recursive: true});
+  try {
+    await fs.writeFile(temporary, JSON.stringify({cliPath: selectedPath}, null, 2), 'utf8');
+    await fs.rename(temporary, file);
+    cliPath = selectedPath;
+  } finally {
+    await fs.rm(temporary, {force: true}).catch(() => {});
+  }
+}
+
+function send(channel, data) {
+  if (win && !win.isDestroyed()) win.webContents.send(channel, data);
+}
+
+function handle(channel, callback) {
+  ipcMain.handle(channel, (event, ...args) => {
+    const frame = event.senderFrame;
+    if (!win || event.sender !== win.webContents || frame !== win.webContents.mainFrame ||
+        frame?.url !== rendererUrl) throw Error('Недопустимый источник запроса');
+    return callback(...args);
+  });
+}
+
+function createWindow() {
+  allowClose = false;
+  rendererReady = false;
+  win = new BrowserWindow({
+    width: 1440, height: 900, minWidth: 900, minHeight: 600, backgroundColor: '#0d111b',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.cjs'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+  win.webContents.setWindowOpenHandler(() => ({action: 'deny'}));
+  win.webContents.on('will-navigate', event => event.preventDefault());
+  win.webContents.on('will-attach-webview', event => event.preventDefault());
+  win.on('close', event => {
+    if (allowClose || !rendererReady || win.webContents.getURL() !== rendererUrl || win.webContents.isCrashed()) return;
+    event.preventDefault();
+    send('editor:requestClose');
+  });
+  win.on('closed', () => { win = null; });
+  const loading = useDevServer ? win.loadURL(devUrl) : win.loadFile(indexPath);
+  loading.catch(() => dialog.showErrorBox('SourceCraft Studio', 'Не удалось открыть интерфейс. Для разработки используйте npm run desktop:dev.'));
+}
+
+app.whenReady().then(async () => {
+  await loadSettings();
+  createWindow();
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  });
+});
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') app.quit();
+});
+app.on('before-quit', event => {
+  if (!activeTask) return;
+  event.preventDefault();
+  stopTask(activeTask).then(stopped => {
+    if (stopped && !activeTask) app.quit();
+  });
+});
+
+async function listFiles(directory) {
+  const output = [];
+  const ignored = new Set(['.git', 'node_modules', 'dist', 'release', '.next', 'build']);
+  async function walk(folder, depth) {
+    if (depth > 5 || output.length >= 700) return;
+    for (const entry of await fs.readdir(folder, {withFileTypes: true})) {
+      if (output.length >= 700) break;
+      if (ignored.has(entry.name)) continue;
+      const full = path.join(folder, entry.name);
+      if (entry.isDirectory()) await walk(full, depth + 1);
+      else if (entry.isFile()) output.push(path.relative(directory, full));
+    }
+  }
+  await walk(directory, 0);
+  return output;
+}
+
+handle('project:choose', async () => {
+  if (activeTask) throw Error('Дождитесь завершения задачи');
+  const result = await dialog.showOpenDialog(win, {properties: ['openDirectory']});
+  if (result.canceled) return null;
+  const directory = await fs.realpath(result.filePaths[0]);
+  const files = await listFiles(directory);
+  root = directory;
+  return {root, files};
+});
+
+async function checkedFile(relative) {
+  const directory = root;
+  if (!directory) throw Error('Сначала откройте проект');
+  const file = await fs.realpath(resolveWithin(directory, relative));
+  if (!within(directory, file)) throw Error('Ссылка ведёт за пределы проекта');
+  const stat = await fs.stat(file);
+  if (!stat.isFile() || stat.size > fileLimit) throw Error('Можно открыть только файл размером до 2 МБ');
+  return file;
+}
+
+async function readText(file) {
+  const bytes = await fs.readFile(file);
+  if (bytes.includes(0)) throw Error('Редактор поддерживает текстовые файлы UTF-8');
+  try {
+    return new TextDecoder('utf-8', {fatal: true, ignoreBOM: true}).decode(bytes);
+  } catch {
+    throw Error('Редактор поддерживает текстовые файлы UTF-8');
+  }
+}
+
+handle('file:read', async relative => readText(await checkedFile(relative)));
+handle('file:save', async (relative, text, expected) => {
+  if (typeof text !== 'string' || Buffer.byteLength(text) > fileLimit) throw Error('Размер файла превышает 2 МБ');
+  const file = await checkedFile(relative);
+  if (await readText(file) !== expected) throw Error('Файл изменился на диске. Скопируйте правки перед повторным открытием файла.');
+  await fs.writeFile(file, text, 'utf8');
+});
+
+handle('editor:confirm', async count => {
+  if (!Number.isInteger(count) || count < 1) throw Error('Некорректное число файлов');
+  const {response} = await dialog.showMessageBox(win, {
+    type: 'warning',
+    title: 'Несохранённые правки',
+    message: count === 1 ? 'В одном файле есть несохранённые правки.' : 'В нескольких файлах есть несохранённые правки.',
+    buttons: ['Сохранить', 'Отбросить', 'Отмена'],
+    defaultId: 0,
+    cancelId: 2,
+    noLink: true,
+  });
+  return ['save', 'discard', 'cancel'][response];
+});
+
+handle('editor:close', async () => {
+  if (activeTask && !await stopTask(activeTask)) throw Error('Не удалось остановить задачу');
+  allowClose = true;
+  win.close();
+});
+
+handle('settings:get', () => ({cliPath}));
+handle('settings:choose', async () => {
+  const result = await dialog.showOpenDialog(win, {
+    properties: ['openFile'],
+    filters: process.platform === 'win32' ? [{name: 'Приложения Windows', extensions: ['exe']}] : [],
+  });
+  return result.canceled ? null : result.filePaths[0];
+});
+handle('settings:setCliPath', async value => {
+  if (activeTask || savingSettings) throw Error('Дождитесь завершения текущей операции');
+  if (typeof value !== 'string' || value.length > 2048) throw Error('Некорректный путь');
+  const selectedPath = value.trim().replace(/^"(.*)"$/, '$1');
+  if (selectedPath && (!path.isAbsolute(selectedPath) ||
+      (process.platform === 'win32' && path.extname(selectedPath).toLowerCase() !== '.exe'))) {
+    throw Error('Укажите абсолютный путь к src.exe');
+  }
+  savingSettings = true;
+  try {
+    const result = selectedPath ? await checkExecutable(selectedPath) : await findCli('');
+    if (!selectedPath || result.ok) await saveSettings(selectedPath);
+    return {...result, saved: !selectedPath || result.ok};
+  } finally {
+    savingSettings = false;
+  }
+});
+handle('agent:check', () => {
+  rendererReady = true;
+  return findCli(cliPath);
+});
+handle('agent:auth', async () => {
+  const directory = root;
+  const status = await findCli(cliPath);
+  if (!status.ok) return {status: 'unavailable', message: status.message};
+  return checkAuth(status.path, directory);
+});
+
+function killTree(proc) {
+  if (!proc.pid) return Promise.resolve(false);
+  if (process.platform === 'win32') {
+    const taskkill = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'taskkill.exe');
+    return new Promise(resolve => {
+      execFile(taskkill, ['/PID', String(proc.pid), '/T', '/F'], {windowsHide: true, timeout: 5000}, error => {
+        resolve(!error);
+      });
+    });
+  }
+  try {
+    process.kill(-proc.pid, 'SIGKILL');
+    return Promise.resolve(true);
+  } catch {
+    return Promise.resolve(false);
+  }
+}
+
+async function stopTask(task, outcome = 'cancelled') {
+  task.stop ??= Promise.resolve().then(async () => {
+    const stopped = task.proc ? await killTree(task.proc) : true;
+    if (stopped) task.outcome = outcome;
+    else task.stop = null;
+    return stopped || task.closed;
+  });
+  const stopped = await task.stop;
+  if (stopped) await task.finished;
+  return stopped;
+}
+
+function streamTask(task, file, args, cwd) {
+  return new Promise(resolve => {
+    const proc = spawn(file, args, {
+      cwd, windowsHide: true, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    task.proc = proc;
+    let bytes = 0;
+    let limitHit = false;
+    for (const [stream, kind] of [[proc.stdout, 'stdout'], [proc.stderr, 'stderr']]) {
+      const decoder = new StringDecoder('utf8');
+      stream.on('data', chunk => {
+        const remaining = Math.max(0, outputLimit - bytes);
+        const text = decoder.write(chunk.subarray(0, remaining));
+        if (text) send('agent:output', {kind, text});
+        bytes += chunk.length;
+        if (bytes <= outputLimit || limitHit) return;
+        limitHit = true;
+        stopTask(task, 'output-limit').then(stopped => {
+          if (!stopped) send('agent:output', {kind: 'stderr', text: '\nНе удалось остановить задачу после превышения лимита вывода.\n'});
+        });
+      });
+      stream.on('end', () => {
+        const text = limitHit ? '' : decoder.end();
+        if (text) send('agent:output', {kind, text});
+      });
+    }
+    proc.on('error', error => send('agent:output', {kind: 'stderr', text: error.message}));
+    proc.on('close', async code => {
+      task.closed = true;
+      await task.stop;
+      resolve({status: task.outcome || (code === 0 ? 'completed' : 'failed'), code: code ?? -1});
+    });
+  });
+}
+
+handle('agent:run', async (prompt, agent) => {
+  const directory = root;
+  if (!directory) throw Error('Сначала откройте проект');
+  if (activeTask || savingSettings) throw Error('Дождитесь завершения текущей операции');
+  if (typeof prompt !== 'string' || !prompt.trim() || prompt.length > 12000) throw Error('Введите задачу длиной до 12 000 символов');
+  const flags = {ycodex: '--ycodex', codex: '--codex'};
+  if (!Object.hasOwn(flags, agent)) throw Error('Этот агент не поддерживается');
+
+  const task = {proc: null, stop: null, outcome: null, closed: false, finished: null};
+  activeTask = task;
+  task.finished = (async () => {
+    const cli = await findCli(cliPath);
+    await task.stop;
+    if (task.outcome) return {status: task.outcome, code: -1};
+    if (!cli.ok) throw Error(cli.message);
+    return streamTask(task, cli.path, ['do', flags[agent], '--', prompt], directory);
+  })().finally(() => { activeTask = null; });
+  return task.finished;
+});
+
+handle('agent:cancel', () => activeTask ? stopTask(activeTask) : false);
