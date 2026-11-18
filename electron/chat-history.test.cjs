@@ -11,7 +11,7 @@ test('stores each project separately and restores its conversation id and messag
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'studio-history-test-'));
   t.after(() => fs.rm(directory, {recursive: true, force: true}));
   const project = path.join(directory, 'project');
-  const chat = {id: randomUUID(), threadId: randomUUID(), agent: 'chat', title: 'Задача',
+  const chat = {id: randomUUID(), threadId: randomUUID(), title: 'Задача',
     messages: [{role: 'user', text: 'Проверь файл'}, {role: 'agent', text: 'Проверил'}]};
   const history = createChatHistory(directory);
   await Promise.all([history.save(project, chat), history.save(project, {...chat, title: 'Новый заголовок'})]);

@@ -12,7 +12,7 @@ if (typeof electron === 'string') {
   if (run.error) console.error(run.error);
   process.exitCode = run.status ?? 1;
 } else {
-  const {app, BrowserWindow, dialog, clipboard} = electron;
+  const {app, BrowserWindow, dialog} = electron;
   const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
   async function verify() {
@@ -30,21 +30,6 @@ if (typeof electron === 'string') {
         fs.writeFile(path.join(project, 'version'), 'console.log("Version: 0.0.122\\nGit Commit: 12345678");'),
         fs.copyFile(path.join(__dirname, 'fixture-app-server.cjs'), path.join(project, 'codex')),
         fs.writeFile(path.join(project, 'auth'), 'process.exitCode = process.argv[2] === "status" ? 0 : 1;'),
-        fs.writeFile(path.join(project, 'do'), [
-          'if (process.argv[2] !== "--ycodex" || process.argv[3] !== "--") process.exit(2);',
-          'if (process.argv[4] === "cancel me") {',
-          '  console.log("CANCEL_READY");',
-          '  setInterval(() => {}, 100);',
-          '} else if (process.argv[4] === "needs approval") {',
-          '  console.error("headless Codex execution requires approval; use interactive src codex");',
-          '  process.exitCode = -1;',
-          '} else {',
-          '  process.stderr.write("\\x1b[2K⠋ Starting up...\\x1b[2K⠹ Connected\\r\\n");',
-          '  process.stdout.write("Old value\\rNew value\\r\\n");',
-          '  for (let i = 0; i < 700; i++) console.log("Line " + i);',
-          '  console.log("LAST_LINE");',
-          '}',
-        ].join('\n')),
       ]);
       app.setPath('userData', userData);
       process.chdir(project);
@@ -92,45 +77,6 @@ if (typeof electron === 'string') {
       await click('.tabs button', 'Сохранить');
       await waitFor(async () => (await fs.readFile(fixture, 'utf8')) === 'Updated', 'file saved');
 
-      await js('(() => { const select = document.querySelector(".composer select"); select.value = "ycodex"; select.dispatchEvent(new Event("change", {bubbles: true})); })()');
-      await input('.composer textarea', 'long output');
-      await click('.composer button', 'Запустить');
-      await waitForText('.chat', 'Задача завершена');
-      for (const selector of ['.chat', '.terminal pre']) {
-        assert.equal(await has(selector, 'LAST_LINE'), true, selector + ' lost its final line');
-        assert.equal(await has(selector, 'New value'), true);
-        for (const discarded of ['Old value', 'Starting up', 'Connected', '\x1b']) {
-          assert.equal(await has(selector, discarded), false, selector + ' leaked ' + discarded);
-        }
-        const metrics = await js('(() => { const el = document.querySelector(' + JSON.stringify(selector) +
-          '); return {top: el.scrollTop, height: el.scrollHeight, visible: el.clientHeight}; })()');
-        assert.ok(metrics.visible > 0 && metrics.height > metrics.visible, selector + ' is not scrollable');
-        assert.ok(metrics.height - metrics.top - metrics.visible < 2, selector + ' did not follow output');
-      }
-      await js('document.querySelector(".chat").scrollTop = 0; document.querySelector(".chat").dispatchEvent(new Event("scroll"));');
-      await input('.composer textarea', 'cancel me');
-      await click('.composer button', 'Запустить');
-      await waitForText('.chat', 'CANCEL_READY');
-      assert.equal(await js('document.querySelector(".chat").scrollTop'), 0, 'chat moved while reading older output');
-      await click('.composer button', 'Остановить');
-      await waitForText('.chat', 'Задача отменена');
-      await input('.composer textarea', 'needs approval');
-      await click('.composer button', 'Запустить');
-      await waitForText('.chat', 'Агенту нужно ваше подтверждение');
-      await click('.approval-actions button', 'Скопировать команду');
-      await waitForText('.approval-actions', 'Команда скопирована');
-      assert.equal(await clipboard.readText(), "Set-Location -LiteralPath '" + await fs.realpath(project) +
-        "' -ErrorAction Stop; & '" + path.join(cliDir, 'src.exe') + "' ycodex");
-      await click('.approval-actions button', 'Скопировать запрос');
-      await waitForText('.approval-actions', 'Запрос скопирован');
-      assert.equal(await clipboard.readText(), 'needs approval');
-      assert.equal(await js('[...document.querySelectorAll(".message")].slice(-2).map(el => el.classList[1]).join(",")'), 'agent,result');
-      await click('.chat-toolbar button', 'Новый чат');
-      await waitFor(() => js('document.querySelector(".chat-toolbar select").options.length === 2'), 'saved chat available');
-      await js('(() => { const select = document.querySelector(".chat-toolbar select"); select.selectedIndex = 1; select.dispatchEvent(new Event("change", {bubbles: true})); })()');
-      await waitForText('.chat', 'LAST_LINE');
-      await click('.chat-toolbar button', 'Новый чат');
-      await waitFor(() => js('document.querySelector(".composer select").value === "chat"'), 'interactive chat');
       await input('.composer textarea', 'Подтверждение в Studio');
       await click('.composer button', 'Запустить');
       await waitForText('.approval-panel', 'Get-Content notes.txt');
@@ -147,7 +93,19 @@ if (typeof electron === 'string') {
       await waitForText('.approval-panel', 'Get-Content notes.txt');
       await click('.approval-panel button', 'Отклонить');
       await waitForText('.chat', 'Отказ получен.');
-      console.log('Desktop smoke passed: CLI detection, authentication UI, editor save, clean output, scroll, cancellation');
+      await waitFor(() => js('[...document.querySelectorAll(".composer button")].some(b => b.textContent === "Запустить")'), 'ready to cancel');
+      await input('.composer textarea', 'Остановить текущую задачу');
+      await click('.composer button', 'Запустить');
+      await waitForText('.approval-panel', 'Get-Content notes.txt');
+      await click('.composer button', 'Остановить');
+      await waitForText('.chat', 'Задача отменена');
+      await waitFor(() => js('[...document.querySelectorAll(".composer button")].some(b => b.textContent === "Запустить")'), 'second turn done');
+      await click('.chat-toolbar button', 'Новый чат');
+      await waitFor(() => js('document.querySelector(".chat-toolbar select").options.length === 2'), 'saved chat available');
+      await js('(() => { const select = document.querySelector(".chat-toolbar select"); select.selectedIndex = 1; select.dispatchEvent(new Event("change", {bubbles: true})); })()');
+      await waitForText('.chat', 'Подтверждение получено.');
+      await waitForText('.chat', 'Отказ получен.');
+      console.log('Desktop smoke passed: CLI detection, authentication UI, editor save, approvals, action feed, chat history');
     } finally {
       process.chdir(os.tmpdir());
     }

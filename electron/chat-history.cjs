@@ -31,13 +31,12 @@ function createChatHistory(directory) {
   }
 
   function save(root, input) {
-    if (!input || !validId(input.id) || !['chat', 'ycodex', 'codex'].includes(input.agent) ||
+    if (!input || !validId(input.id) ||
         (input.threadId && !validId(input.threadId)) || !Array.isArray(input.messages)) {
       throw Error('Не удалось сохранить чат: неверный формат.');
     }
     const chat = {
       id: input.id,
-      agent: input.agent,
       threadId: input.threadId || '',
       title: String(input.title || 'Новый чат').slice(0, 90),
       updatedAt: Date.now(),

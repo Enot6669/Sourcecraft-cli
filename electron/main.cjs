@@ -2,11 +2,9 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const {randomUUID} = require('node:crypto');
 const {pathToFileURL} = require('node:url');
-const {runCli} = require('./run-cli.cjs');
-const {interactiveCommand} = require('./interactive.cjs');
 const {runServerTurn} = require('./app-server.cjs');
 const {createChatHistory, validId} = require('./chat-history.cjs');
-const {app, BrowserWindow, ipcMain, dialog, clipboard} = require('electron');
+const {app, BrowserWindow, ipcMain, dialog} = require('electron');
 const {resolveWithin, within} = require('./paths.cjs');
 const {checkAuth, checkExecutable, findCli} = require('./cli.cjs');
 
@@ -223,11 +221,6 @@ async function stopTask(task) {
   return result?.status !== 'stop-failed';
 }
 
-handle('clipboard:copy', text => {
-  if (typeof text !== 'string' || text.length > 16000) throw Error('Не удалось скопировать текст');
-  return clipboard.writeText(text);
-});
-
 handle('chat:list', () => root ? chatHistory.list(root) : []);
 handle('chat:save', (directory, chat) => {
   if (!root || root !== directory) throw Error('Проект был изменён.');
@@ -236,15 +229,13 @@ handle('chat:save', (directory, chat) => {
 handle('agent:decision', (taskId, key, accept) =>
   activeTask?.id === taskId && (activeTask.decide?.(key, accept) ?? false));
 
-handle('agent:run', async (prompt, agent, taskId, threadId) => {
+handle('agent:run', async (prompt, taskId, threadId) => {
   if (!Number.isSafeInteger(taskId) || taskId < 1) throw Error('Некорректный номер задачи');
   const directory = root;
   if (!directory) throw Error('Сначала откройте проект');
   if (activeTask || savingSettings) throw Error('Дождитесь завершения текущей операции');
   if (typeof prompt !== 'string' || !prompt.trim() || prompt.length > 12000) throw Error('Введите задачу длиной до 12 000 символов');
   if (threadId && !validId(threadId)) throw Error('Некорректный идентификатор чата');
-  const flags = {ycodex: '--ycodex', codex: '--codex'};
-  if (agent !== 'chat' && !Object.hasOwn(flags, agent)) throw Error('Этот агент не поддерживается');
 
   const task = {id: taskId, decide: null, controller: new AbortController(), finished: null};
   activeTask = task;
@@ -257,24 +248,12 @@ handle('agent:run', async (prompt, agent, taskId, threadId) => {
       return result;
     }
     if (!cli.ok) throw Error(cli.message);
-    if (agent === 'chat') {
-      const result = await runServerTurn(cli.path, {
-        cwd: directory, prompt, threadId, signal,
-        onEvent: event => send('agent:event', {taskId, ...event}),
-        registerDecision: decide => { task.decide = decide; },
-      });
-      send('agent:output', {taskId, result});
-      return result;
-    }
-    const result = await runCli(cli.path, ['do', flags[agent], '--', prompt], {
-      cwd: directory,
-      signal,
-      onOutput: text => send('agent:output', {taskId, text}),
+    const result = await runServerTurn(cli.path, {
+      cwd: directory, prompt, threadId, signal,
+      onEvent: event => send('agent:event', {taskId, ...event}),
+      registerDecision: decide => { task.decide = decide; },
     });
     send('agent:output', {taskId, result});
-    if (result.status === 'approval-required') {
-      return {...result, command: interactiveCommand(directory, cli.path, agent)};
-    }
     return result;
   })().finally(() => { activeTask = null; });
   return task.finished;

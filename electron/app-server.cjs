@@ -148,8 +148,8 @@ async function runServerTurn(file, {cwd, prompt, threadId, signal, onEvent, regi
       turnId = params.turn.id;
     } else if (method === 'turn/completed') {
       const turn = params.turn;
-      doneResolve({status: turn.status === 'completed' ? 'completed'
-        : turn.status === 'interrupted' ? 'cancelled' : 'failed', message: turn.error?.message});
+      doneResolve({status: signal.aborted || turn.status === 'interrupted' ? 'cancelled'
+        : turn.status === 'completed' ? 'completed' : 'failed', message: turn.error?.message});
     } else if (method === 'serverRequest/resolved') {
       const key = String(params.requestId);
       if (approvals.has(key)) forget(key);
@@ -191,7 +191,7 @@ async function runServerTurn(file, {cwd, prompt, threadId, signal, onEvent, regi
   function collect(chunk, decoder) {
     startupText = (startupText + decoder.write(chunk)).slice(-6000);
     // Only connect after the spawned CLI reports binding its loopback server.
-    if (!started && startupText.includes(address)) {
+    if (!closed && !started && startupText.includes(address)) {
       started = true;
       socket = new WebSocket(address);
       socket.addEventListener('open', () => readyResolve(true), {once: true});
