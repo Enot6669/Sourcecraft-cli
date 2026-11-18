@@ -1,10 +1,11 @@
 const {execFile} = require('node:child_process');
 const fs = require('node:fs/promises');
 const path = require('node:path');
+const {cliEnvironment} = require('./run-cli.cjs');
 
-function execute(file, args, {cwd, timeout = 8000} = {}) {
+function execute(file, args, {cwd, timeout = 8000, signal} = {}) {
   return new Promise(resolve => {
-    const process = execFile(file, args, {cwd, timeout, windowsHide: true, maxBuffer: 64 * 1024},
+    const process = execFile(file, args, {cwd, timeout, signal, env: cliEnvironment(), windowsHide: true, maxBuffer: 64 * 1024},
       (error, stdout, stderr) => resolve({
         ok: !error,
         stdout,
@@ -32,27 +33,28 @@ function readVersion(stdout) {
   return match && /^Git Commit:\s*[0-9a-f]{7,}\s*$/im.test(stdout) ? match[1] : '';
 }
 
-async function probe(file, cwd) {
+async function probe(file, cwd, signal) {
   const stat = await fs.stat(file).catch(() => null);
-  if (!stat?.isFile()) return null;
+  if (signal?.aborted || !stat?.isFile()) return null;
 
-  const result = await execute(file, ['version'], {cwd});
+  const result = await execute(file, ['version'], {cwd, signal});
   const version = result.ok ? readVersion(result.stdout) : '';
   const message = version ? 'SourceCraft CLI готов к работе.'
     : result.timedOut ? 'SourceCraft CLI не ответил вовремя.' : 'Файл не прошёл проверку SourceCraft CLI.';
   return {ok: Boolean(version), path: file, version, message};
 }
 
-async function checkExecutable(file, cwd) {
-  return await probe(file, cwd) ?? {ok: false, path: file, version: '', message: 'Файл CLI не найден.'};
+async function checkExecutable(file, cwd, signal) {
+  return await probe(file, cwd, signal) ?? {ok: false, path: file, version: '', message: 'Файл CLI не найден.'};
 }
 
-async function findCli(manualPath, cwd) {
-  if (manualPath) return checkExecutable(manualPath, cwd);
+async function findCli(manualPath, cwd, signal) {
+  if (manualPath) return checkExecutable(manualPath, cwd, signal);
 
   let failure;
   for (const file of candidates(process.platform, process.env)) {
-    const status = await probe(file, cwd);
+    if (signal?.aborted) break;
+    const status = await probe(file, cwd, signal);
     if (status?.ok) return status;
     failure ??= status;
   }

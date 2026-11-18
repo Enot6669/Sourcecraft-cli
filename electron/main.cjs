@@ -1,9 +1,8 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const {randomUUID} = require('node:crypto');
-const {spawn, execFile} = require('node:child_process');
 const {pathToFileURL} = require('node:url');
-const {StringDecoder} = require('node:string_decoder');
+const {runCli} = require('./run-cli.cjs');
 const {app, BrowserWindow, ipcMain, dialog} = require('electron');
 const {resolveWithin, within} = require('./paths.cjs');
 const {checkAuth, checkExecutable, findCli} = require('./cli.cjs');
@@ -13,7 +12,6 @@ const indexPath = path.join(__dirname, '../dist/index.html');
 const useDevServer = !app.isPackaged && process.argv.includes('--studio-dev');
 const rendererUrl = useDevServer ? devUrl : pathToFileURL(indexPath).href;
 const fileLimit = 2 * 1024 * 1024;
-const outputLimit = 4 * 1024 * 1024;
 
 let win;
 let root = null;
@@ -98,9 +96,7 @@ app.on('window-all-closed', () => {
 app.on('before-quit', event => {
   if (!activeTask) return;
   event.preventDefault();
-  stopTask(activeTask).then(stopped => {
-    if (stopped && !activeTask) app.quit();
-  });
+  stopTask(activeTask).then(() => app.quit());
 });
 
 async function listFiles(directory) {
@@ -173,7 +169,7 @@ handle('editor:confirm', async count => {
 });
 
 handle('editor:close', async () => {
-  if (activeTask && !await stopTask(activeTask)) throw Error('Не удалось остановить задачу');
+  if (activeTask) await stopTask(activeTask);
   allowClose = true;
   win.close();
 });
@@ -214,69 +210,10 @@ handle('agent:auth', async () => {
   return checkAuth(status.path, directory);
 });
 
-function killTree(proc) {
-  if (!proc.pid) return Promise.resolve(false);
-  if (process.platform === 'win32') {
-    const taskkill = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'taskkill.exe');
-    return new Promise(resolve => {
-      execFile(taskkill, ['/PID', String(proc.pid), '/T', '/F'], {windowsHide: true, timeout: 5000}, error => {
-        resolve(!error);
-      });
-    });
-  }
-  try {
-    process.kill(-proc.pid, 'SIGKILL');
-    return Promise.resolve(true);
-  } catch {
-    return Promise.resolve(false);
-  }
-}
-
-async function stopTask(task, outcome = 'cancelled') {
-  task.stop ??= Promise.resolve().then(async () => {
-    const stopped = task.proc ? await killTree(task.proc) : true;
-    if (stopped) task.outcome = outcome;
-    else task.stop = null;
-    return stopped || task.closed;
-  });
-  const stopped = await task.stop;
-  if (stopped) await task.finished;
-  return stopped;
-}
-
-function streamTask(task, file, args, cwd) {
-  return new Promise(resolve => {
-    const proc = spawn(file, args, {
-      cwd, windowsHide: true, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    task.proc = proc;
-    let bytes = 0;
-    let limitHit = false;
-    for (const [stream, kind] of [[proc.stdout, 'stdout'], [proc.stderr, 'stderr']]) {
-      const decoder = new StringDecoder('utf8');
-      stream.on('data', chunk => {
-        const remaining = Math.max(0, outputLimit - bytes);
-        const text = decoder.write(chunk.subarray(0, remaining));
-        if (text) send('agent:output', {kind, text});
-        bytes += chunk.length;
-        if (bytes <= outputLimit || limitHit) return;
-        limitHit = true;
-        stopTask(task, 'output-limit').then(stopped => {
-          if (!stopped) send('agent:output', {kind: 'stderr', text: '\nНе удалось остановить задачу после превышения лимита вывода.\n'});
-        });
-      });
-      stream.on('end', () => {
-        const text = limitHit ? '' : decoder.end();
-        if (text) send('agent:output', {kind, text});
-      });
-    }
-    proc.on('error', error => send('agent:output', {kind: 'stderr', text: error.message}));
-    proc.on('close', async code => {
-      task.closed = true;
-      await task.stop;
-      resolve({status: task.outcome || (code === 0 ? 'completed' : 'failed'), code: code ?? -1});
-    });
-  });
+async function stopTask(task) {
+  task.controller.abort();
+  const result = await task.finished.catch(() => null);
+  return result?.status !== 'stop-failed';
 }
 
 handle('agent:run', async (prompt, agent) => {
@@ -287,14 +224,18 @@ handle('agent:run', async (prompt, agent) => {
   const flags = {ycodex: '--ycodex', codex: '--codex'};
   if (!Object.hasOwn(flags, agent)) throw Error('Этот агент не поддерживается');
 
-  const task = {proc: null, stop: null, outcome: null, closed: false, finished: null};
+  const task = {controller: new AbortController(), finished: null};
   activeTask = task;
   task.finished = (async () => {
-    const cli = await findCli(cliPath);
-    await task.stop;
-    if (task.outcome) return {status: task.outcome, code: -1};
+    const {signal} = task.controller;
+    const cli = await findCli(cliPath, undefined, signal);
+    if (signal.aborted) return {status: 'cancelled', code: -1};
     if (!cli.ok) throw Error(cli.message);
-    return streamTask(task, cli.path, ['do', flags[agent], '--', prompt], directory);
+    return runCli(cli.path, ['do', flags[agent], '--', prompt], {
+      cwd: directory,
+      signal,
+      onOutput: text => send('agent:output', {text}),
+    });
   })().finally(() => { activeTask = null; });
   return task.finished;
 });

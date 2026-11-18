@@ -3,3 +3,12 @@
 .status.ready{color:#9cdbac}
 .message.error{border:1px solid #a95461}
 .message.result{background:#172031}
+
+/* Keep the scrollable panes inside the window even when output grows. */
+.app{grid-template-rows:minmax(0,1fr)}
+.sidebar,.editor,.assistant,.chat,.terminal pre{min-height:0}
+.tabs,.terminal,.terminal-head,.assistant header,.composer{flex-shrink:0}
+.chat,.terminal pre{overflow-y:auto;overscroll-behavior:contain}
+.terminal pre{overflow-wrap:anywhere}
+.composer textarea{max-height:30vh}
+.chat:focus-visible,.terminal pre:focus-visible{outline:2px solid #9366ff;outline-offset:-2px}

@@ -1,4 +1,4 @@
-import React, {useEffect, useRef, useState} from 'react';
+import React, {useEffect, useLayoutEffect, useRef, useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import './style.css';
 
@@ -9,6 +9,9 @@ const taskResults = {
   completed: 'Задача завершена',
   cancelled: 'Задача отменена',
   'output-limit': 'Задача остановлена по лимиту вывода',
+  'startup-timeout': 'Агент не начал отвечать вовремя. Проверьте подключение и авторизацию CLI.',
+  timeout: 'Задача остановлена по истечении времени ожидания.',
+  'stop-failed': 'Не удалось завершить процесс CLI.',
 };
 const authLabels = {
   'signed-in': 'Вход выполнен',
@@ -16,6 +19,36 @@ const authLabels = {
   unavailable: 'CLI недоступен',
   error: 'Ошибка проверки',
 };
+
+function appendOutput(previous, chunk) {
+  const text = previous.text + chunk;
+  return {
+    ...previous,
+    text: text.slice(-terminalLimit),
+    truncated: previous.truncated || text.length > terminalLimit,
+  };
+}
+
+function outputText({text, truncated}) {
+  return truncated ? '[Начало вывода скрыто из-за ограничения размера]\n' + text : text;
+}
+
+function useFollowOutput(content, visible = true) {
+  const ref = useRef(null);
+  const follow = useRef(true);
+
+  function onScroll(event) {
+    const {scrollTop, scrollHeight, clientHeight} = event.currentTarget;
+    follow.current = scrollHeight - scrollTop - clientHeight < 32;
+  }
+
+  useLayoutEffect(() => {
+    const element = ref.current;
+    if (element && follow.current) element.scrollTop = element.scrollHeight;
+  }, [content, visible]);
+
+  return {ref, onScroll};
+}
 
 function CliSettings({diagnostic, setDiagnostic, running, close}) {
   const [cliPath, setCliPath] = useState('');
@@ -117,11 +150,13 @@ function App() {
   const [running, setRunning] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [editorBusy, setEditorBusy] = useState(false);
-  const [terminal, setTerminal] = useState('');
+  const [terminal, setTerminal] = useState({text: '', truncated: false});
   const [showTerminal, setShowTerminal] = useState(true);
   const editorLock = useRef(false);
   const taskLock = useRef(false);
   const checkInitial = useRef(true);
+  const chatScroll = useFollowOutput(messages);
+  const terminalScroll = useFollowOutput(terminal, showTerminal);
 
   useEffect(() => {
     api.checkCli().then(result => {
@@ -131,13 +166,13 @@ function App() {
       if (checkInitial.current) setDiagnostic({ok: false, message: cleanError(error)});
     });
     return api.onOutput(({text}) => {
-      setTerminal(value => (value + text).slice(-terminalLimit));
+      setTerminal(previous => appendOutput(previous, text));
       setMessages(items => {
         const last = items.at(-1);
         if (last?.role === 'agent') {
-          return [...items.slice(0, -1), {...last, text: (last.text + text).slice(-terminalLimit)}];
+          return [...items.slice(0, -1), appendOutput(last, text)];
         }
-        return [...items, {role: 'agent', text: text.slice(-terminalLimit)}];
+        return [...items, appendOutput({role: 'agent', text: ''}, text)];
       });
     });
   }, []);
@@ -231,7 +266,7 @@ function App() {
     try {
       const result = await api.runTask(question, agent);
       const status = taskResults[result.status] || 'Ошибка выполнения, код ' + result.code;
-      setTerminal(previous => (previous + '\n[' + status + ']\n').slice(-terminalLimit));
+      setTerminal(previous => appendOutput(previous, '\n[' + status + ']\n'));
       setMessages(previous => [...previous, {role: 'result', text: status}]);
     } catch (error) {
       setMessages(previous => [...previous, {role: 'error', text: cleanError(error)}]);
@@ -294,17 +329,19 @@ function App() {
           <button className="terminal-head" onClick={() => setShowTerminal(value => !value)}>
             ⌘ Терминал агента <span>{showTerminal ? '⌄' : '⌃'}</span>
           </button>
-          {showTerminal && <pre>{terminal || 'Вывод команд появится здесь после запуска задачи.'}</pre>}
+          {showTerminal && <pre {...terminalScroll} tabIndex={0} aria-label="Вывод терминала">
+            {terminal.text ? outputText(terminal) : 'Вывод команд появится здесь после запуска задачи.'}
+          </pre>}
         </div>
       </main>
       <section className="assistant">
         <header>✧ AI Ассистент <small>Локальный CLI</small></header>
-        <div className="chat">
+        <div className="chat" {...chatScroll} tabIndex={0} role="region" aria-label="Диалог с ассистентом">
           {messages.length === 0 ? <div className="welcome-chat"><b>SOURCECRAFT</b>
             <p>Откройте проект, выберите агента и отправьте задачу.</p>
           </div> : messages.map((message, index) =>
             <div key={index} className={'message ' + message.role}>
-              <b>{{user: 'Вы', agent: 'Агент', error: 'Ошибка', result: 'Статус'}[message.role]}</b><pre>{message.text}</pre>
+              <b>{{user: 'Вы', agent: 'Агент', error: 'Ошибка', result: 'Статус'}[message.role]}</b><pre>{outputText(message)}</pre>
             </div>
           )}
         </div>
